@@ -2,11 +2,11 @@
 import { createInsertSchema } from 'drizzle-zod';
 import { z } from 'zod';
 
-import { teams, players, tournaments, matches } from '../db/schema.js';
+import { teams, users, tournaments, matches } from '../db/schema.js';
 import { NANO_ID_LENGTH } from '../utils/security.js';
 
-export const insertTeamSchema = createInsertSchema(tea            ms);
-export const insertPlayerSchema = createInsertSchema(players);
+export const insertTeamSchema = createInsertSchema(teams);
+export const insertPlayerSchema = createInsertSchema(users);
 export const insertTournamentSchema = createInsertSchema(tournaments);
 export const insertMatchSchema = createInsertSchema(matches);
 

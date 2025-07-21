@@ -22,7 +22,7 @@ Thumbs.db
 # Environment variables
 .env
 .env.*
-!.env.example
+# !.env.example
 
 # Build output
 dist/
@@ -53,8 +53,8 @@ coverage/
 *.pid.lock
 
 # Drizzle ORM
-drizzle/
-**/drizzle/
+# drizzle/
+# **/drizzle/
 
 # Test coverage
 coverage/
@@ -64,3 +64,5 @@ coverage/
 # package-lock.json
 # yarn.lock
 # pnpm-lock.yaml
+
+node_modules

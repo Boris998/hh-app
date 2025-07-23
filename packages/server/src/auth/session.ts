@@ -4,7 +4,6 @@ export type Session = {
   email: string;
   name?: string;
 }
-
 import redis from '../lib/redis'
 import { JWTService, type TokenPayload } from './jwt'
 

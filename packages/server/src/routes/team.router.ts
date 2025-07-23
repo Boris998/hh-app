@@ -1,80 +1,108 @@
 // packages/server/src/routes/team.router.ts
-import { zValidator } from '@hono/zod-validator';
 import { Hono } from 'hono';
-import { HTTPException } from 'hono/http-exception';
-import { z } from 'zod';
+import { eq } from 'drizzle-orm';
+import { db } from '../db/index.js';
+import { teams } from '../db/schema.js';
+import { insertTeamSchema, updateTeamSchema, type CreateTeamRequest, type UpdateTeamRequest } from '../db/team-schema.js';
+import { validateRequest } from '../middleware/validate-request.js';
+import { authenticateToken } from '../middleware/auth.js';
 
-import { insertTeamSchema, updateTeamSchema, nanoIdSchema } from '../db/zod.schema.js';
-import { type AppContext } from '../lib/context.js';
-import {
-  createTeam,
-  deleteTeam,
-  getTeam,
-  getTeams,
-  updateTeam,
-} from '../repository/team.repo.js';
-import { sendSuccess } from '../utils/responses.js';
+export const teamRouter = new Hono();
 
-export const teamsRouter = new Hono<AppContext>()
-  .get('/', async (c) => {
-    const teams = await getTeams();
-    return sendSuccess(c, {
-      payload: teams,
-      message: 'Teams retrieved successfully',
-    });
-  })
-  .get(
-    '/:id',
-    zValidator('param', z.object({ id: nanoIdSchema })),
-    async (c) => {
-      const { id } = c.req.valid('param');
-      const team = await getTeam(id);
-      if (!team) throw new HTTPException(404, { message: 'Team not found' });
-      
-      return sendSuccess(c, {
-        payload: team,
-        message: 'Team retrieved successfully',
-      });
-    },
-  )
-  .post('/', zValidator('query', insertTeamSchema), async (c) => {
-    const teamData = c.req.valid('query');
-    const team = await createTeam(teamData);
+// Get all teams
+teamRouter.get('/', async (c) => {
+  try {
+    const allTeams = await db.select().from(teams);
+    return c.json(allTeams);
+  } catch (error) {
+    return c.json({ error: 'Failed to fetch teams' }, 500);
+  }
+});
+
+// Get team by public ID
+teamRouter.get('/:publicId', async (c) => {
+  try {
+    const publicId = c.req.param('publicId');
+    const team = await db
+      .select()
+      .from(teams)
+      .where(eq(teams.publicId, publicId))
+      .limit(1);
     
-    return sendSuccess(c, {
-      payload: team,
-      message: 'Team created successfully',
-      statusCode: 201,
-    });
-  })
-  .patch(
-    '/:id',
-    zValidator('param', z.object({ id: nanoIdSchema })),
-    zValidator('json', updateTeamSchema),
-    async (c) => {
-      const { id } = c.req.valid('param');
-      const teamData = c.req.valid('json');
+    if (team.length === 0) {
+      return c.json({ error: 'Team not found' }, 404);
+    }
+    
+    return c.json(team[0]);
+  } catch (error) {
+    return c.json({ error: 'Failed to fetch team' }, 500);
+  }
+});
+
+// Create team
+teamRouter.post(
+  '/',
+  authenticateToken,
+  validateRequest(insertTeamSchema),
+  async (c) => {
+    try {
+      const teamData: CreateTeamRequest = c.get('validatedBody');
       
-      const team = await updateTeam(id, teamData);
-      if (!team) throw new HTTPException(404, { message: 'Team not found' });
+      const [newTeam] = await db
+        .insert(teams)
+        .values(teamData)
+        .returning();
       
-      return sendSuccess(c, {
-        payload: team,
-        message: 'Team updated successfully',
-      });
-    },
-  )
-  .delete(
-    '/:id',
-    zValidator('param', z.object({ id: nanoIdSchema })),
-    async (c) => {
-      const { id } = c.req.valid('param');
-      const team = await deleteTeam(id);
-      if (!team) throw new HTTPException(404, { message: 'Team not found' });
+      return c.json(newTeam, 201);
+    } catch (error) {
+      return c.json({ error: 'Failed to create team' }, 500);
+    }
+  }
+);
+
+// Update team
+teamRouter.put(
+  '/:publicId',
+  authenticateToken,
+  validateRequest(updateTeamSchema),
+  async (c) => {
+    try {
+      const publicId = c.req.param('publicId');
+      const updateData: UpdateTeamRequest = c.get('validatedBody');
       
-      return sendSuccess(c, {
-        payload: null,
-        message: 'Team deleted successfully',
-      });
-    },
-  );
+      const [updatedTeam] = await db
+        .update(teams)
+        .set({ ...updateData, updatedAt: new Date() })
+        .where(eq(teams.publicId, publicId))
+        .returning();
+      
+      if (!updatedTeam) {
+        return c.json({ error: 'Team not found' }, 404);
+      }
+      
+      return c.json(updatedTeam);
+    } catch (error) {
+      return c.json({ error: 'Failed to update team' }, 500);
+    }
+  }
+);
+
+// Delete team
+teamRouter.delete('/:publicId', authenticateToken, async (c) => {
+  try {
+    const publicId = c.req.param('publicId');
+    
+    const [deletedTeam] = await db
+      .delete(teams)
+      .where(eq(teams.publicId, publicId))
+      .returning();
+    
+    if (!deletedTeam) {
+      return c.json({ error: 'Team not found' }, 404);
+    }
+    
+    return c.json({ message: 'Team deleted successfully' });
+  } catch (error) {
+    return c.json({ error: 'Failed to delete team' }, 500);
+  }
+});

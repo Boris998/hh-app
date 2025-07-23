@@ -4,6 +4,7 @@ import { jwtVerify } from 'jose';
 import { db } from '../db/index.js';
 import { users } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
+import { unauthorized } from '../utils/responses';
 
 export type JWTPayload = {
   userId: number;
@@ -12,7 +13,7 @@ export type JWTPayload = {
 }
 
 export type User = {
-  id: number;
+  id: string | number;
   publicId: string;
   email: string;
   firstName: string;
@@ -108,3 +109,38 @@ export const optionalAuth = async (c: Context, next: Next) => {
     await next();
   }
 };
+
+// Role-based authentication middleware
+export const requireRole = (requiredRole: string) => {
+    return async (c: Context, next: Next) => {
+      await authenticateToken(c, next);
+      // If authentication failed, authenticateToken will return a response and not call next.
+      const user = c.get('user') as User;
+      
+      // Check if user has required role (you'll need to add role to User type)
+      // For now, assuming all authenticated users are valid
+      // TODO: Add role checking logic when you implement user roles
+      
+      await next();
+    };
+  };
+  
+  // Middleware to check if user owns resource (for user-specific endpoints)
+  export const requireOwnership = (getUserIdFromParams: (c: Context) => number | string) => {
+    return async (c: Context, next: Next) => {
+      await authenticateToken(c, next);
+      // If authentication failed, authenticateToken will return a response and not call next.
+      const user = c.get('user') as User;
+      const resourceUserId = getUserIdFromParams(c);
+      
+      // Convert to same type for comparison
+      const userIdStr = user.id.toString();
+      const resourceUserIdStr = resourceUserId.toString();
+      
+      if (userIdStr !== resourceUserIdStr) {
+        return unauthorized(c, 'Access denied: insufficient permissions');
+      }
+      
+      await next();
+    };
+  };

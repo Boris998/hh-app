@@ -1,22 +1,10 @@
-import { Hono } from 'hono';
-import { zValidator } from '@hono/zod-validator';
-import { registerSchema, registerUser } from './services/auth';
+import { Hono } from 'hono'
+import authRouter from './routes/auth.router'
+import { errorHandler } from './middleware/error-handler'
 
-const app = new Hono();
+const app = new Hono()
 
-app.get('/', (c) => c.text('Server running'));
+app.use('*', errorHandler())
+app.route('/auth', authRouter)
 
-app.post('/auth/register', zValidator('json', registerSchema), async (c) => {
-  try {
-    const data = c.req.valid('json');
-    const user = await registerUser(data);
-    return c.json({ user }, 201);
-  } catch (error:any) {
-    return c.json({ error: error.message }, 400);
-  }
-});
-
-export default {
-  port: process.env.PORT || 3001,
-  fetch: app.fetch,
-};
+export default app

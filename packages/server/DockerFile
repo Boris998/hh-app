@@ -1,0 +1,25 @@
+FROM node:18-alpine
+
+WORKDIR /app
+
+# Install pnpm
+RUN npm install -g pnpm
+
+# Copy package files
+COPY package*.json ./
+COPY pnpm-workspace.yaml ./
+COPY packages/server/package.json ./packages/server/
+
+# Install dependencies
+RUN pnpm install --frozen-lockfile
+
+# Copy source code
+COPY packages/server ./packages/server
+
+# Build
+WORKDIR /app/packages/server
+RUN pnpm build
+
+EXPOSE 3000
+
+CMD ["pnpm", "start"]

@@ -1,5 +1,20 @@
 import { defineConfig } from 'drizzle-kit';
-import dotenv from 'dotenv';
+import * as dotenv from 'dotenv';
+import z from 'zod';
+
+// Load environment variables
+dotenv.config();
+
+const envSchema = z.object({
+  DB_USER: z.string(),
+  DB_PASSWORD: z.string(),
+  DB_NAME: z.string(),
+  DB_HOST: z.string(),
+  DB_PORT: z.string().transform(Number),
+  DATABASE_URL: z.string().url(),
+});
+
+const env = envSchema.parse(process.env);
 
 export default defineConfig({
   schema: './src/db/schema.ts',
@@ -11,3 +26,4 @@ export default defineConfig({
   verbose: true,
   strict: true,
 });
+

@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { SessionService } from '../auth/session';
+import { authenticateToken, type User } from '../middleware/auth'; // Updated import
 import { 
   successResponse, 
   AppError, 
@@ -10,7 +11,6 @@ import {
   unauthorized,
   badRequest 
 } from '../utils/responses';
-import { requireAuth } from '../middleware/auth';
 
 const auth = new Hono();
 
@@ -37,17 +37,24 @@ auth.post('/login', zValidator('json', LoginSchema), async (c) => {
       return unauthorized(c, 'Invalid email or password');
     }
     
-    const tokens = await SessionService.createSession(user);
+    const tokens = await SessionService.createSession({
+      ...user,
+      id: user.id.toString()
+    });
     
     return successResponse(c, {
       user: { 
         id: user.id, 
+        publicId: user.publicId,
         email: user.email, 
-        role: user.role 
+        firstName: user.firstName,
+        lastName: user.lastName,
+        avatarUrl: user.avatarUrl
       },
       tokens
     }, 200, 'Login successful');
   } catch (error) {
+    console.error('Login error:', error);
     throw new AppError(
       ErrorCode.INTERNAL_ERROR,
       'Failed to process login request',
@@ -69,6 +76,7 @@ auth.post('/refresh', zValidator('json', RefreshSchema), async (c) => {
     
     return successResponse(c, { tokens: newTokens }, 200, 'Tokens refreshed');
   } catch (error) {
+    console.error('Token refresh error:', error);
     throw new AppError(
       ErrorCode.INTERNAL_ERROR,
       'Failed to refresh tokens',
@@ -78,13 +86,14 @@ auth.post('/refresh', zValidator('json', RefreshSchema), async (c) => {
 });
 
 // POST /auth/logout
-auth.post('/logout', requireAuth(), async (c) => {
+auth.post('/logout', authenticateToken, async (c) => { // Use authenticateToken directly
   try {
-    const user = c.get('user');
-    await SessionService.revokeRefreshToken(user.userId);
+    const user = c.get('user') as User;
+    await SessionService.revokeRefreshToken(user.id.toString()); // Use user.id instead of user.userId
     
     return successResponse(c, { message: 'Logged out successfully' }, 200);
   } catch (error) {
+    console.error('Logout error:', error);
     throw new AppError(
       ErrorCode.INTERNAL_ERROR,
       'Failed to logout',
@@ -94,14 +103,24 @@ auth.post('/logout', requireAuth(), async (c) => {
 });
 
 // GET /auth/me
-auth.get('/me', requireAuth(), async (c) => {
+auth.get('/me', authenticateToken, async (c) => { // Use authenticateToken directly
   try {
-    const user = c.get('user');
+    const user = c.get('user') as User;
     
-    // TODO: Fetch full user profile from database
-    // For now, return the user from the token
-    return successResponse(c, { user }, 200);
+    return successResponse(c, { 
+      user: {
+        id: user.id,
+        publicId: user.publicId,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        avatarUrl: user.avatarUrl,
+        createdAt: user.createdAt,
+        updatedAt: user.updatedAt
+      }
+    }, 200);
   } catch (error) {
+    console.error('Get user profile error:', error);
     throw new AppError(
       ErrorCode.INTERNAL_ERROR,
       'Failed to fetch user profile',
@@ -111,11 +130,25 @@ auth.get('/me', requireAuth(), async (c) => {
 });
 
 // Mock function - replace with your actual user validation
-async function validateUserCredentials(email: string, password: string) {
-  // TODO: Replace with actual database query and password verification
-  // This is just a mock for development
+async function validateUserCredentials(email: string, password: string): Promise<User | null> {
+  // TODO: Replace with actual database query and password verification using bcrypt
+  // This should:
+  // 1. Query user by email from database
+  // 2. Compare provided password with hashed password using bcrypt
+  // 3. Return user data if valid, null if invalid
+  
+  // Mock implementation for development
   if (email === 'user@example.com' && password === 'password') {
-    return { id: 'user-123', email, role: 'user' };
+    return {
+      id: 1,
+      publicId: 'user-123',
+      email,
+      firstName: 'Test',
+      lastName: 'User',
+      avatarUrl: 'avatarurl',
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
   }
   return null;
 }

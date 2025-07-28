@@ -1,24 +1,23 @@
-// packages/server/src/middlewares/auth.ts
+// src/middleware/auth.ts - Fixed with role property
 import type { Context, Next } from 'hono';
 import { jwtVerify } from 'jose';
-import { db } from '../db/index.js';
+import { db } from '../db/client.js';
 import { users } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
-import { unauthorized } from '../utils/responses';
 
 export type JWTPayload = {
-  userId: number;
+  userId: string; // Changed to string for UUID
   iat?: number;
   exp?: number;
 }
 
 export type User = {
-  id: string | number;
+  id: string;
   publicId: string;
   email: string;
-  firstName: string;
-  lastName: string;
+  username: string; // Added username
   avatarUrl?: string;
+  role: string; // Added role property
   createdAt: Date;
   updatedAt: Date;
 }
@@ -71,76 +70,3 @@ export const authenticateToken = async (c: Context, next: Next) => {
     return c.json({ error: 'Authentication failed' }, 500);
   }
 };
-
-// Optional: Middleware for routes that work with or without authentication
-export const optionalAuth = async (c: Context, next: Next) => {
-  try {
-    const authHeader = c.req.header('Authorization');
-    const token = authHeader && authHeader.startsWith('Bearer ') 
-      ? authHeader.substring(7) 
-      : null;
-
-    if (token) {
-      const JWT_SECRET = process.env.JWT_SECRET;
-      if (JWT_SECRET) {
-        try {
-          const secret = new TextEncoder().encode(JWT_SECRET);
-          const { payload } = await jwtVerify(token, secret);
-          const jwtPayload = payload as unknown as JWTPayload;
-          
-          const user = await db
-            .select()
-            .from(users)
-            .where(eq(users.id, jwtPayload.userId))
-            .limit(1);
-
-          if (user.length > 0) {
-            c.set('user', user[0] as User);
-          }
-        } catch (jwtError) {
-          // Token is invalid, but we continue without setting user
-        }
-      }
-    }
-    
-    await next();
-  } catch (error) {
-    // Continue without authentication
-    await next();
-  }
-};
-
-// Role-based authentication middleware
-export const requireRole = (requiredRole: string) => {
-    return async (c: Context, next: Next) => {
-      await authenticateToken(c, next);
-      // If authentication failed, authenticateToken will return a response and not call next.
-      const user = c.get('user') as User;
-      
-      // Check if user has required role (you'll need to add role to User type)
-      // For now, assuming all authenticated users are valid
-      // TODO: Add role checking logic when you implement user roles
-      
-      await next();
-    };
-  };
-  
-  // Middleware to check if user owns resource (for user-specific endpoints)
-  export const requireOwnership = (getUserIdFromParams: (c: Context) => number | string) => {
-    return async (c: Context, next: Next) => {
-      await authenticateToken(c, next);
-      // If authentication failed, authenticateToken will return a response and not call next.
-      const user = c.get('user') as User;
-      const resourceUserId = getUserIdFromParams(c);
-      
-      // Convert to same type for comparison
-      const userIdStr = user.id.toString();
-      const resourceUserIdStr = resourceUserId.toString();
-      
-      if (userIdStr !== resourceUserIdStr) {
-        return unauthorized(c, 'Access denied: insufficient permissions');
-      }
-      
-      await next();
-    };
-  };

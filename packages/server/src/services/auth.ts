@@ -24,8 +24,8 @@ export async function registerUser(data: z.infer<typeof registerSchema>) {
   const [newUser] = await db
     .insert(users)
     .values({
-      email: data.email,
-      password: hashedPassword,
+      email: data.email ?? '',
+      password: hashedPassword ?? '',
       name: data.name ?? '',
     })
     .returning();

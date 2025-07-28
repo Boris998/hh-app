@@ -7,7 +7,14 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "server:start": "pnpm --filter server start",
+    "server:dev": "pnpm --filter server dev",
+    "server:setup": "pnpm --filter server setup:full",
+    "server:db:push": "pnpm --filter server db:push",
+    "server:db:generate": "pnpm --filter server db:generate",
+    "server:db:studio": "pnpm --filter server db:studio",
+    "server:seed": "pnpm --filter server seed:activity-types"
   },
   "keywords": [],
   "author": "",

@@ -1,17 +1,14 @@
-// packages/server/src/middlewares/validate-request.ts
+// src/middleware/validate-request.ts - Fixed version
 import type { Context, Next } from 'hono';
 import { z, ZodSchema } from 'zod';
 
 export const validateRequest = (schema: ZodSchema) => {
   return async (c: Context, next: Next) => {
     try {
-      // Get the request body
       const body = await c.req.json();
-      
-      // Validate the request body
       const validatedData = schema.parse(body);
       
-      // Store validated data in context for use in handlers
+      // Store validated data in context
       c.set('validatedBody', validatedData);
       
       await next();

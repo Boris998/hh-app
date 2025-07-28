@@ -1,8 +1,8 @@
-// packages/server/src/db/schema.ts
+// src/db/schema.ts - Fixed version without duplicates
+
 import { relations } from 'drizzle-orm';
 import {
   pgTable,
-  serial,
   varchar,
   text,
   timestamp,
@@ -11,196 +11,125 @@ import {
   pgEnum,
   uuid,
   jsonb,
+  unique
 } from 'drizzle-orm/pg-core';
 
 // Enums
-export const userRoleEnum = pgEnum('user_role', ['admin', 'organizer', 'player']);
-export const tournamentStatusEnum = pgEnum('tournament_status', ['draft', 'upcoming', 'ongoing', 'completed', 'cancelled']);
-export const matchStatusEnum = pgEnum('match_status', ['scheduled', 'ongoing', 'completed', 'cancelled']);
+export const userRoleEnum = pgEnum('user_role', ['admin', 'user', 'moderator']);
+export const connectionStatusEnum = pgEnum('connection_status', ['pending', 'accepted', 'rejected']);
+export const participantStatusEnum = pgEnum('participant_status', ['pending', 'accepted', 'declined']);
+export const skillTypeEnum = pgEnum('skill_type', ['physical', 'technical', 'mental', 'tactical']);
 
-// Users table
+// NEW: Activity category enum
+export const activityCategoryEnum = pgEnum('activity_category', [
+  'team_sports', 
+  'individual_sports', 
+  'fitness', 
+  'mind_body', 
+  'combat_sports',
+  'outdoor_activities'
+]);
+
+// Tables
 export const users = pgTable('users', {
-  id: serial('id').primaryKey(),
+  id: uuid('id').defaultRandom().primaryKey(),
   publicId: uuid('public_id').defaultRandom().notNull().unique(),
+  username: varchar('username', { length: 50 }).notNull().unique(),
   email: varchar('email', { length: 255 }).notNull().unique(),
   passwordHash: varchar('password_hash', { length: 255 }),
-  firstName: varchar('first_name', { length: 100 }).notNull(),
-  lastName: varchar('last_name', { length: 100 }).notNull(),
   avatarUrl: varchar('avatar_url', { length: 500 }),
-  role: userRoleEnum('role').default('player').notNull(),
-  isEmailVerified: boolean('is_email_verified').default(false).notNull(),
+  role: userRoleEnum('role').default('user').notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
-// Teams table
-export const teams = pgTable('teams', {
-  id: serial('id').primaryKey(),
+// NEW: ActivityTypes table
+export const activityTypes = pgTable('activity_types', {
+  id: uuid('id').defaultRandom().primaryKey(),
   publicId: uuid('public_id').defaultRandom().notNull().unique(),
-  name: varchar('name', { length: 100 }).notNull(),
-  logoUrl: varchar('logo_url', { length: 500 }),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull(),
-});
-
-// Players table
-export const players = pgTable('players', {
-  id: serial('id').primaryKey(),
-  publicId: uuid('public_id').defaultRandom().notNull().unique(),
-  userId: integer('user_id').references(() => users.id).notNull(),
-  teamId: integer('team_id').references(() => teams.id),
-  position: varchar('position', { length: 50 }),
-  jerseyNumber: integer('jersey_number'),
-  stats: jsonb('stats'),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull(),
-});
-
-// Tournaments table
-export const tournaments = pgTable('tournaments', {
-  id: serial('id').primaryKey(),
-  publicId: uuid('public_id').defaultRandom().notNull().unique(),
-  name: varchar('name', { length: 200 }).notNull(),
+  name: varchar('name', { length: 100 }).notNull().unique(),
   description: text('description'),
-  startDate: timestamp('start_date').notNull(),
-  endDate: timestamp('end_date').notNull(),
+  category: activityCategoryEnum('category').notNull(),
+  isSoloPerformable: boolean('is_solo_performable').default(false).notNull(),
+  
+  // JSON fields for flexible configuration
+  skillCategories: jsonb('skill_categories').notNull().default('[]'),
+  defaultELOSettings: jsonb('default_elo_settings').notNull().default('{}'),
+  
+  // Metadata
+  isActive: boolean('is_active').default(true).notNull(),
+  displayOrder: integer('display_order').default(0),
+  iconUrl: varchar('icon_url', { length: 500 }),
+  
+  // Timestamps
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+// Updated activities table
+export const activities = pgTable('activities', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  publicId: uuid('public_id').defaultRandom().notNull().unique(),
+  activityTypeId: uuid('activity_type_id').references(() => activityTypes.id, { onDelete: 'restrict' }).notNull(),
+  creatorId: uuid('creator_id').references(() => users.id).notNull(),
+  description: text('description'),
   location: varchar('location', { length: 200 }),
-  maxTeams: integer('max_teams').notNull(),
-  entryFee: integer('entry_fee'), // in cents
-  prizePool: integer('prize_pool'), // in cents
-  status: tournamentStatusEnum('status').default('draft').notNull(),
-  organizerId: integer('organizer_id').references(() => users.id).notNull(),
+  dateTime: timestamp('date_time').notNull(),
+  
+  // NEW: Enhanced fields
+  maxParticipants: integer('max_participants'),
+  eloLevel: integer('elo_level'),
+  skillRequirements: jsonb('skill_requirements').default('{}'),
+  isELORated: boolean('is_elo_rated').default(true).notNull(),
+  completionStatus: varchar('completion_status', { length: 20 }).default('scheduled').notNull(),
+  
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
-// Matches table
-export const matches = pgTable('matches', {
-  id: serial('id').primaryKey(),
-  publicId: uuid('public_id').defaultRandom().notNull().unique(),
-  tournamentId: integer('tournament_id').references(() => tournaments.id).notNull(),
-  homeTeamId: integer('home_team_id').references(() => teams.id).notNull(),
-  awayTeamId: integer('away_team_id').references(() => teams.id).notNull(),
-  scheduledAt: timestamp('scheduled_at').notNull(),
-  homeScore: integer('home_score'),
-  awayScore: integer('away_score'),
-  status: matchStatusEnum('status').default('scheduled').notNull(),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull(),
-});
-
-// Chat Rooms table
-export const chatRooms = pgTable('chat_rooms', {
-  id: serial('id').primaryKey(),
-  publicId: uuid('public_id').defaultRandom().notNull().unique(),
-  name: varchar('name', { length: 100 }).notNull(),
-  description: text('description'),
-  isPrivate: boolean('is_private').default(false).notNull(),
-  createdById: integer('created_by_id').references(() => users.id).notNull(),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull(),
-});
-
-// Room Members table
-export const roomMembers = pgTable('room_members', {
-  id: serial('id').primaryKey(),
-  roomId: integer('room_id').references(() => chatRooms.id).notNull(),
-  userId: integer('user_id').references(() => users.id).notNull(),
+export const activityParticipants = pgTable('activity_participants', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  activityId: uuid('activity_id').references(() => activities.id).notNull(),
+  userId: uuid('user_id').references(() => users.id).notNull(),
+  status: participantStatusEnum('status').default('pending').notNull(),
+  
+  // NEW: Enhanced fields for team activities
+  team: varchar('team', { length: 50 }),
+  finalResult: varchar('final_result', { length: 20 }),
+  performanceNotes: text('performance_notes'),
+  
   joinedAt: timestamp('joined_at').defaultNow().notNull(),
-  isAdmin: boolean('is_admin').default(false).notNull(),
-});
-
-// Messages table
-export const messages = pgTable('messages', {
-  id: serial('id').primaryKey(),
-  publicId: uuid('public_id').defaultRandom().notNull().unique(),
-  roomId: integer('room_id').references(() => chatRooms.id).notNull(),
-  senderId: integer('sender_id').references(() => users.id).notNull(),
-  content: text('content').notNull(),
-  messageType: varchar('message_type', { length: 50 }).default('text').notNull(), // text, image, file, etc.
-  metadata: jsonb('metadata'), // for storing additional data like file info
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
 // Relations
-export const usersRelations = relations(users, ({ many, one }) => ({
-  players: many(players),
-  organizedTournaments: many(tournaments),
-  createdChatRooms: many(chatRooms),
-  roomMemberships: many(roomMembers),
-  messages: many(messages),
+export const usersRelations = relations(users, ({ many }) => ({
+  createdActivities: many(activities),
+  activityParticipants: many(activityParticipants),
 }));
 
-export const teamsRelations = relations(teams, ({ many }) => ({
-  players: many(players),
-  homeMatches: many(matches, { relationName: 'homeTeam' }),
-  awayMatches: many(matches, { relationName: 'awayTeam' }),
+export const activityTypesRelations = relations(activityTypes, ({ many }) => ({
+  activities: many(activities),
 }));
 
-export const playersRelations = relations(players, ({ one }) => ({
-  user: one(users, {
-    fields: [players.userId],
+export const activitiesRelations = relations(activities, ({ one, many }) => ({
+  activityType: one(activityTypes, {
+    fields: [activities.activityTypeId],
+    references: [activityTypes.id],
+  }),
+  creator: one(users, {
+    fields: [activities.creatorId],
     references: [users.id],
   }),
-  team: one(teams, {
-    fields: [players.teamId],
-    references: [teams.id],
-  }),
+  participants: many(activityParticipants),
 }));
 
-export const tournamentsRelations = relations(tournaments, ({ one, many }) => ({
-  organizer: one(users, {
-    fields: [tournaments.organizerId],
-    references: [users.id],
-  }),
-  matches: many(matches),
-}));
-
-export const matchesRelations = relations(matches, ({ one }) => ({
-  tournament: one(tournaments, {
-    fields: [matches.tournamentId],
-    references: [tournaments.id],
-  }),
-  homeTeam: one(teams, {
-    fields: [matches.homeTeamId],
-    references: [teams.id],
-    relationName: 'homeTeam',
-  }),
-  awayTeam: one(teams, {
-    fields: [matches.awayTeamId],
-    references: [teams.id],
-    relationName: 'awayTeam',
-  }),
-}));
-
-export const chatRoomsRelations = relations(chatRooms, ({ one, many }) => ({
-  createdBy: one(users, {
-    fields: [chatRooms.createdById],
-    references: [users.id],
-  }),
-  members: many(roomMembers),
-  messages: many(messages),
-}));
-
-export const roomMembersRelations = relations(roomMembers, ({ one }) => ({
-  room: one(chatRooms, {
-    fields: [roomMembers.roomId],
-    references: [chatRooms.id],
+export const activityParticipantsRelations = relations(activityParticipants, ({ one }) => ({
+  activity: one(activities, {
+    fields: [activityParticipants.activityId],
+    references: [activities.id],
   }),
   user: one(users, {
-    fields: [roomMembers.userId],
-    references: [users.id],
-  }),
-}));
-
-export const messagesRelations = relations(messages, ({ one }) => ({
-  room: one(chatRooms, {
-    fields: [messages.roomId],
-    references: [chatRooms.id],
-  }),
-  sender: one(users, {
-    fields: [messages.senderId],
+    fields: [activityParticipants.userId],
     references: [users.id],
   }),
 }));

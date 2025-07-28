@@ -6,15 +6,25 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts",
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",
-    "db:studio": "drizzle-kit studio"
+    "db:studio": "drizzle-kit studio",
+    "migrate:up": "drizzle-kit push",
+    "migrate:create": "drizzle-kit generate --name",
+    "seed:activity-types": "tsx src/db/seeds/seed-activity-types.ts seed",
+    "seed:activity-types:update": "tsx src/db/seeds/seed-activity-types.ts update",
+    "seed:activity-types:cleanup": "tsx src/db/seeds/seed-activity-types.ts cleanup",
+    "seed:activity-types:full": "tsx src/db/seeds/seed-activity-types.ts full",
+    "setup:db": "pnpm db:push && pnpm seed:activity-types",
+    "setup:full": "tsx scripts/setup-database.ts"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "packageManager": "pnpm@10.11.0",
   "dependencies": {
+    "@hono/node-server": "^1.17.1",
     "@hono/zod-validator": "^0.4.1",
     "bcryptjs": "^3.0.2",
     "dotenv": "^16.5.0",

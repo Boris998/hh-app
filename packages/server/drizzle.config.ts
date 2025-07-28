@@ -1,29 +1,17 @@
 import { defineConfig } from 'drizzle-kit';
 import * as dotenv from 'dotenv';
-import z from 'zod';
 
-// Load environment variables
-dotenv.config();
-
-const envSchema = z.object({
-  DB_USER: z.string(),
-  DB_PASSWORD: z.string(),
-  DB_NAME: z.string(),
-  DB_HOST: z.string(),
-  DB_PORT: z.string().transform(Number),
-  DATABASE_URL: z.string().url(),
-});
-
-const env = envSchema.parse(process.env);
+// Try loading from multiple locations
+dotenv.config({ path: '.env' });
+dotenv.config({ path: '../../.env' });
 
 export default defineConfig({
   schema: './src/db/schema.ts',
-  out: './drizzle',
+  out: './drizzle/migrations', 
   dialect: 'postgresql',
   dbCredentials: {
-    url: process.env.DATABASE_URL!,
+    url: "postgresql://postgres.wdqcduhctvmdppjwngou:PUT_204_nocontent@aws-0-us-east-2.pooler.supabase.com:6543/postgres",
   },
   verbose: true,
   strict: true,
 });
-

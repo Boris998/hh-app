@@ -8,6 +8,13 @@
       "when": 1753641311935,
       "tag": "0000_plain_squirrel_girl",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1753799055198,
+      "tag": "0001_steady_praxagora",
+      "breakpoints": true
     }
   ]
 }

@@ -7,6 +7,8 @@ import { secureHeaders } from 'hono/secure-headers';
 import { authRouter } from './routes/auth.router.js';
 import { activityTypesRouter } from './routes/activity-types.router.js';
 import { errorHandler } from './middleware/error-handler.js';
+import { messagingRouter } from './routes/messaging.router.js';
+import { websocketRouter } from './routes/websocket.router.js';
 
 const app = new Hono();
 
@@ -40,7 +42,9 @@ app.get('/health', (c) => {
 const apiRoutes = app
   .basePath('/api')
   .route('/auth', authRouter)
-  .route('/activity-types', activityTypesRouter);
+  .route('/activity-types', activityTypesRouter)
+  .route('/messaging', messagingRouter)        // ADD THIS
+  .route('/ws', websocketRouter);  
 
 // Error handling middleware (should be last)
 app.use('*', errorHandler());

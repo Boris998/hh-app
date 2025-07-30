@@ -17,7 +17,10 @@
     "seed:activity-types:cleanup": "tsx src/db/seeds/seed-activity-types.ts cleanup",
     "seed:activity-types:full": "tsx src/db/seeds/seed-activity-types.ts full",
     "setup:db": "pnpm db:push && pnpm seed:activity-types",
-    "setup:full": "tsx scripts/setup-database.ts"
+    "setup:full": "tsx scripts/setup-database.ts",
+    "migrate:skills": "tsx src/db/seeds/migrate-skills-to-tables.ts",
+    "seed:mock-data": "tsx src/db/seeds/create-mock-data.ts",
+    "setup:full-with-data": "pnpm db:push && pnpm seed:activity-types && pnpm migrate:skills && pnpm seed:mock-data"
   },
   "keywords": [],
   "author": "",
@@ -45,7 +48,7 @@
     "@types/node": "^20.17.50",
     "@types/pg": "^8.15.2",
     "drizzle-kit": "^0.31.1",
-    "tsx": "^4.7.0",
+    "tsx": "^4.19.4",
     "typescript": "^5.8.3"
   },
   "type": "module"

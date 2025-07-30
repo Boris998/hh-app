@@ -1,5 +1,3 @@
-// src/db/schema.ts - Fixed version without duplicates
-
 import { relations } from 'drizzle-orm';
 import {
   pgTable,
@@ -100,6 +98,92 @@ export const activityParticipants = pgTable('activity_participants', {
   
   joinedAt: timestamp('joined_at').defaultNow().notNull(),
 });
+
+export const skillDefinitions = pgTable('skill_definitions', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  publicId: uuid('public_id').defaultRandom().notNull().unique(),
+  name: varchar('name', { length: 100 }).notNull().unique(),
+  skillType: skillTypeEnum('skill_type').notNull(), // physical/technical/mental/tactical
+  isGeneral: boolean('is_general').default(false).notNull(),
+  description: text('description'),
+  ratingScaleMin: integer('rating_scale_min').default(1),
+  ratingScaleMax: integer('rating_scale_max').default(10),
+  category: varchar('category', { length: 50 }),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+export const activityTypeSkills = pgTable('activity_type_skills', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  activityTypeId: uuid('activity_type_id').references(() => activityTypes.id).notNull(),
+  skillDefinitionId: uuid('skill_definition_id').references(() => skillDefinitions.id).notNull(),
+  isSpecificToActivityType: boolean('is_specific_to_activity_type').default(false),
+  weight: integer('weight').default(100), // 0-100 importance percentage
+  displayOrder: integer('display_order').default(0),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+  unique: unique().on(table.activityTypeId, table.skillDefinitionId),
+}));
+
+export const userConnections = pgTable('user_connections', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  user1Id: uuid('user1_id').references(() => users.id).notNull(),
+  user2Id: uuid('user2_id').references(() => users.id).notNull(),
+  status: connectionStatusEnum('status').default('pending').notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
+export const userActivityTypeELOs = pgTable('user_activity_type_elos', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  userId: uuid('user_id').references(() => users.id).notNull(),
+  activityTypeId: uuid('activity_type_id').references(() => activityTypes.id).notNull(),
+  eloScore: integer('elo_score').default(1200).notNull(),
+  gamesPlayed: integer('games_played').default(0),
+  peakELO: integer('peak_elo').default(1200),
+  volatility: integer('volatility').default(300), // stored as integer (3.00 * 100)
+  lastUpdated: timestamp('last_updated').defaultNow().notNull(),
+  version: integer('version').default(1), // optimistic locking
+}, (table) => ({
+  unique: unique().on(table.userId, table.activityTypeId),
+}));
+
+export const activityELOStatus = pgTable('activity_elo_status', {
+  activityId: uuid('activity_id').references(() => activities.id).primaryKey(),
+  status: varchar('status', { length: 20 }).default('pending').notNull(),
+  lockedBy: varchar('locked_by', { length: 100 }),
+  lockedAt: timestamp('locked_at'),
+  completedAt: timestamp('completed_at'),
+  errorMessage: text('error_message'),
+  retryCount: integer('retry_count').default(0),
+});
+
+export const userActivitySkillRatings = pgTable('user_activity_skill_ratings', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  activityId: uuid('activity_id').references(() => activities.id).notNull(),
+  ratedUserId: uuid('rated_user_id').references(() => users.id).notNull(),
+  ratingUserId: uuid('rating_user_id').references(() => users.id).notNull(),
+  skillDefinitionId: uuid('skill_definition_id').references(() => skillDefinitions.id).notNull(),
+  ratingValue: integer('rating_value').notNull(), // 1-10
+  confidence: integer('confidence').default(5), // 1-5
+  comment: text('comment'),
+  isAnonymous: boolean('is_anonymous').default(false),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+  unique: unique().on(table.activityId, table.ratedUserId, table.ratingUserId, table.skillDefinitionId),
+}));
+
+export const userActivityTypeSkillSummaries = pgTable('user_activity_type_skill_summaries', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  userId: uuid('user_id').references(() => users.id).notNull(),
+  activityTypeId: uuid('activity_type_id').references(() => activityTypes.id).notNull(),
+  skillDefinitionId: uuid('skill_definition_id').references(() => skillDefinitions.id).notNull(),
+  averageRating: integer('average_rating'), // stored as integer (7.50 * 100 = 750)
+  totalRatings: integer('total_ratings').default(0),
+  lastCalculatedAt: timestamp('last_calculated_at').defaultNow(),
+  trend: varchar('trend', { length: 20 }).default('stable'),
+}, (table) => ({
+  unique: unique().on(table.userId, table.activityTypeId, table.skillDefinitionId),
+}));
 
 // Relations
 export const usersRelations = relations(users, ({ many }) => ({

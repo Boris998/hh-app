@@ -17,7 +17,7 @@ export const defaultELOSettingsSchema = z.object({
   kFactor: z.object({
     new: z.number().min(16).max(64).default(40),
     established: z.number().min(8).max(32).default(20),
-    expert: z.number().min(8).max(24).default(16)
+    expert: z.number().min(4).max(24).default(16)
   }),
   provisionalGames: z.number().min(5).max(50).default(30),
   minimumParticipants: z.number().min(1).max(20).default(2),

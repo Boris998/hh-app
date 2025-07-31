@@ -1,7 +1,12 @@
-// src/routes/auth.router.ts - Fixed with named export
+// src/routes/auth.router.ts - FIXED with real database validation
+
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
+import bcrypt from 'bcryptjs';
+import { eq } from 'drizzle-orm';
+import { db } from '../db/client.js';
+import { users } from '../db/schema.js';
 import { SessionService } from '../auth/session.js';
 import { authenticateToken, type User } from '../middleware/auth.js';
 
@@ -22,15 +27,20 @@ authRouter.post('/login', zValidator('json', LoginSchema), async (c) => {
   const { email, password } = c.req.valid('json');
   
   try {
-    // Mock user validation - replace with actual database query
+    console.log(`🔐 Login attempt for: ${email}`);
+    
+    // Validate user credentials against database
     const user = await validateUserCredentials(email, password);
     
     if (!user) {
+      console.log(`❌ Invalid credentials for: ${email}`);
       return c.json({ error: 'Invalid email or password' }, 401);
     }
     
+    console.log(`✅ User validated: ${user.username} (${user.email})`);
+    
     const tokens = await SessionService.createSession({
-      id: user.id.toString(),
+      id: user.id,
       email: user.email,
       role: user.role
     });
@@ -43,7 +53,8 @@ authRouter.post('/login', zValidator('json', LoginSchema), async (c) => {
           publicId: user.publicId,
           email: user.email, 
           username: user.username,
-          avatarUrl: user.avatarUrl
+          avatarUrl: user.avatarUrl,
+          role: user.role
         },
         tokens
       },
@@ -81,7 +92,7 @@ authRouter.post('/refresh', zValidator('json', RefreshSchema), async (c) => {
 authRouter.post('/logout', authenticateToken, async (c) => {
   try {
     const user = c.get('user') as User;
-    await SessionService.revokeRefreshToken(user.id.toString());
+    await SessionService.revokeRefreshToken(user.id);
     
     return c.json({
       status: 'success',
@@ -119,20 +130,54 @@ authRouter.get('/me', authenticateToken, async (c) => {
   }
 });
 
-// Mock function - replace with actual user validation
+// REAL user validation function
 async function validateUserCredentials(email: string, password: string): Promise<User | null> {
-  // Mock implementation for testing
-  if (email === 'test@example.com' && password === 'password') {
+  try {
+    console.log(`🔍 Looking up user: ${email}`);
+    
+    // Get user from database
+    const [user] = await db
+      .select()
+      .from(users)
+      .where(eq(users.email, email))
+      .limit(1);
+    
+    if (!user) {
+      console.log(`❌ User not found: ${email}`);
+      return null;
+    }
+    
+    console.log(`👤 Found user: ${user.username} (${user.email})`);
+    
+    // Verify password
+    if (!user.passwordHash) {
+      console.log(`❌ No password hash for user: ${email}`);
+      return null;
+    }
+    
+    const isPasswordValid = await bcrypt.compare(password, user.passwordHash);
+    
+    if (!isPasswordValid) {
+      console.log(`❌ Invalid password for: ${email}`);
+      return null;
+    }
+    
+    console.log(`✅ Password validated for: ${email}`);
+    
+    // Return user in the expected format
     return {
-      id: 'user-123',
-      publicId: 'user-123-public',
-      email,
-      username: 'testuser',
-      role: 'user',
-      avatarUrl: undefined,
-      createdAt: new Date(),
-      updatedAt: new Date()
+      id: user.id,
+      publicId: user.publicId,
+      email: user.email,
+      username: user.username,
+      avatarUrl: user.avatarUrl || undefined,
+      role: user.role,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt
     };
+    
+  } catch (error) {
+    console.error('Error validating user credentials:', error);
+    return null;
   }
-  return null;
 }

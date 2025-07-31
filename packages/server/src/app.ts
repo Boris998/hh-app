@@ -4,11 +4,12 @@ import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
 import { secureHeaders } from 'hono/secure-headers';
 
-import { authRouter } from './routes/auth.router.js';
-import { activityTypesRouter } from './routes/activity-types.router.js';
 import { errorHandler } from './middleware/error-handler.js';
+import { activityTypesRouter } from './routes/activity-types.router.js';
+import { authRouter } from './routes/auth.router.js';
 import { messagingRouter } from './routes/messaging.router.js';
-import { websocketRouter } from './routes/websocket.router.js';
+import { activitiesRouter } from './routes/enhanced-activities.router.js';
+import { activityChatRouter } from './routes/activity-chat.router.js';
 
 const app = new Hono();
 
@@ -31,6 +32,7 @@ app.get('/', (c) => {
   });
 });
 
+
 app.get('/health', (c) => {
   return c.json({
     status: 'healthy',
@@ -43,8 +45,10 @@ const apiRoutes = app
   .basePath('/api')
   .route('/auth', authRouter)
   .route('/activity-types', activityTypesRouter)
-  .route('/messaging', messagingRouter)        // ADD THIS
-  .route('/ws', websocketRouter);  
+  .route('/messaging', messagingRouter)
+  .route('/activities', activitiesRouter)
+  .route('/activities', activityChatRouter);
+  // .route('/ws', websocketRouter);  
 
 // Error handling middleware (should be last)
 app.use('*', errorHandler());
@@ -53,6 +57,12 @@ app.notFound((c) => {
   return c.json({ 
     error: 'Route Not Found',
     message: `The endpoint ${c.req.method} ${c.req.path} was not found`,
+    availableRoutes: [
+      'GET /api/activities',
+      'POST /api/activities',
+      'GET /api/activities/:id/chat', 
+      'POST /api/activities/:id/chat/messages', 
+    ],
     timestamp: new Date().toISOString()
   }, 404);
 });

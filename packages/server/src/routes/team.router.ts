@@ -1,11 +1,11 @@
 // packages/server/src/routes/team.router.ts
 import { Hono } from 'hono';
 import { eq } from 'drizzle-orm';
-import { db } from '../db/index.js';
 import { teams } from '../db/schema.js';
 import { insertTeamSchema, updateTeamSchema, type CreateTeamRequest, type UpdateTeamRequest } from '../db/team-schema.js';
 import { validateRequest } from '../middleware/validate-request.js';
 import { authenticateToken } from '../middleware/auth.js';
+import { db } from '../db/client.js';
 
 export const teamRouter = new Hono();
 

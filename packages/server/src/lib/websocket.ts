@@ -1,6 +1,6 @@
-// packages/server/src/lib/websocket.ts
-import { createBunWebSocket } from 'hono/bun'
-import type { WSContext } from 'hono/ws'
+// src/lib/websocket.ts - Node.js compatible version
+
+import { createWSMessageEvent, type WSContext } from 'hono/ws'
 
 export interface WebSocketMessage {
   type: 'match_update' | 'team_update' | 'player_update' | 'tournament_update' | 'chat_message' | 'notification'
@@ -99,4 +99,5 @@ class WebSocketManager {
 
 export const wsManager = new WebSocketManager()
 
-export const { upgradeWebSocket, websocket } = createBunWebSocket<WebSocketMessage>()
+// For Node.js, we'll use a different approach - no upgradeWebSocket export for now
+// We'll implement WebSocket support using a different method later

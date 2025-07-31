@@ -1,21 +1,13 @@
 // packages/server/src/routes/messaging.router.ts
 import { Hono } from 'hono';
 import { eq, and, desc } from 'drizzle-orm';
-import { db } from '../db/index.js';
 import { chatRooms, roomMembers, messages, users } from '../db/schema.js';
-import { 
-  insertChatRoomSchema, 
-  updateChatRoomSchema, 
-  insertMessageSchema,
-  insertRoomMemberSchema,
-  type CreateChatRoomRequest,
-  type UpdateChatRoomRequest,
-  type CreateMessageRequest,
-  type JoinRoomRequest
-} from '../db/messaging-schema.js';
+
 import { validateRequest } from '../middleware/validate-request.js';
 import { authenticateToken } from '../middleware/auth.js';
 import type { User } from '../middleware/auth.js';
+import { db } from '../db/client.js';
+import { insertChatRoomSchema, insertMessageSchema, updateChatRoomSchema, type CreateChatRoomRequest, type CreateMessageRequest, type UpdateChatRoomRequest } from '../db/messaging-schema.js';
 
 export const messagingRouter = new Hono();
 

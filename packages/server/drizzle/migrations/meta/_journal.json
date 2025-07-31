@@ -15,6 +15,13 @@
       "when": 1753799055198,
       "tag": "0001_steady_praxagora",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1753883955862,
+      "tag": "0002_eminent_kid_colt",
+      "breakpoints": true
     }
   ]
 }

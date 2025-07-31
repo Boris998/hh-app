@@ -1,7 +1,7 @@
 // scripts/seed-basic.ts - Simple seed for testing
 import 'dotenv/config';
 import { activityTypes } from '../db/schema';
-import { db } from '../db';
+import { db } from '../db/client';
 
 const basicActivityTypes = [
   {

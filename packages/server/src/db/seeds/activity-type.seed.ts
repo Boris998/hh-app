@@ -47,6 +47,7 @@ export const activityTypesSeedData: CreateActivityTypeRequest[] = [
       kFactor: { new: 40, established: 20, expert: 16 },
       provisionalGames: 20,
       minimumParticipants: 10,
+      skillInfluence: 0.25,
       teamBased: true,
       allowDraws: true
     }
@@ -98,7 +99,8 @@ export const activityTypesSeedData: CreateActivityTypeRequest[] = [
       provisionalGames: 25,
       minimumParticipants: 6,
       teamBased: true,
-      allowDraws: false
+      allowDraws: false,
+      skillInfluence: 0.3
     }
   },
 
@@ -148,7 +150,8 @@ export const activityTypesSeedData: CreateActivityTypeRequest[] = [
       provisionalGames: 20,
       minimumParticipants: 8,
       teamBased: true,
-      allowDraws: true
+      allowDraws: true,
+      skillInfluence: 0.3
     }
   },
 
@@ -198,7 +201,8 @@ export const activityTypesSeedData: CreateActivityTypeRequest[] = [
       provisionalGames: 15,
       minimumParticipants: 2,
       teamBased: false,
-      allowDraws: false
+      allowDraws: false,
+      skillInfluence: 0.2
     }
   },
 
@@ -248,7 +252,8 @@ export const activityTypesSeedData: CreateActivityTypeRequest[] = [
       provisionalGames: 10,
       minimumParticipants: 1,
       teamBased: false,
-      allowDraws: false
+      allowDraws: false,
+      skillInfluence: 0.2
     }
   },
 
@@ -298,7 +303,8 @@ export const activityTypesSeedData: CreateActivityTypeRequest[] = [
       provisionalGames: 12,
       minimumParticipants: 1,
       teamBased: false,
-      allowDraws: false
+      allowDraws: false,
+      skillInfluence: 0.2
     }
   },
 
@@ -348,7 +354,8 @@ export const activityTypesSeedData: CreateActivityTypeRequest[] = [
       provisionalGames: 15,
       minimumParticipants: 1,
       teamBased: false,
-      allowDraws: false
+      allowDraws: false,
+      skillInfluence: 0.25
     }
   },
 
@@ -398,7 +405,8 @@ export const activityTypesSeedData: CreateActivityTypeRequest[] = [
       provisionalGames: 20,
       minimumParticipants: 2,
       teamBased: false,
-      allowDraws: false
+      allowDraws: false,
+      skillInfluence: 0.35
     }
   },
 
@@ -448,7 +456,8 @@ export const activityTypesSeedData: CreateActivityTypeRequest[] = [
       provisionalGames: 15,
       minimumParticipants: 2,
       teamBased: false,
-      allowDraws: false
+      allowDraws: false,
+      skillInfluence: 0.25
     }
   },
 
@@ -498,7 +507,8 @@ export const activityTypesSeedData: CreateActivityTypeRequest[] = [
       provisionalGames: 18,
       minimumParticipants: 1,
       teamBased: false,
-      allowDraws: false
+      allowDraws: false,
+      skillInfluence: 0.25
     }
   },
 
@@ -548,7 +558,8 @@ export const activityTypesSeedData: CreateActivityTypeRequest[] = [
       provisionalGames: 8,
       minimumParticipants: 1,
       teamBased: false,
-      allowDraws: false
+      allowDraws: false,
+      skillInfluence: 0.15
     }
   },
 
@@ -598,7 +609,8 @@ export const activityTypesSeedData: CreateActivityTypeRequest[] = [
       provisionalGames: 6,
       minimumParticipants: 1,
       teamBased: false,
-      allowDraws: false
+      allowDraws: false,
+      skillInfluence: 0.2
     }
   },
 
@@ -648,7 +660,8 @@ export const activityTypesSeedData: CreateActivityTypeRequest[] = [
       provisionalGames: 15,
       minimumParticipants: 2,
       teamBased: false,
-      allowDraws: true
+      allowDraws: true,
+      skillInfluence: 0.275
     }
   },
 
@@ -698,7 +711,8 @@ export const activityTypesSeedData: CreateActivityTypeRequest[] = [
       provisionalGames: 12,
       minimumParticipants: 2,
       teamBased: false,
-      allowDraws: true
+      allowDraws: true,
+      skillInfluence: 0.15
     }
   },
 
@@ -748,7 +762,8 @@ export const activityTypesSeedData: CreateActivityTypeRequest[] = [
       provisionalGames: 15,
       minimumParticipants: 1,
       teamBased: false,
-      allowDraws: false
+      allowDraws: false,
+      skillInfluence: 0.2
     }
   },
 
@@ -789,7 +804,7 @@ export const activityTypesSeedData: CreateActivityTypeRequest[] = [
         description: 'Athletic abilities for volleyball',
         skills: ['jumping_ability', 'reaction_time', 'agility', 'hand_eye_coordination'],
         weight: 0.15,
-        displayOrder: 4
+        displayOrder: 4,
       }
     ],
     defaultELOSettings: {
@@ -798,7 +813,8 @@ export const activityTypesSeedData: CreateActivityTypeRequest[] = [
       provisionalGames: 18,
       minimumParticipants: 6,
       teamBased: true,
-      allowDraws: false
+      allowDraws: false,
+      skillInfluence: 0.3
     }
   }
 ];

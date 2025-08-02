@@ -1,22 +1,27 @@
-// packages/server/src/db/team-schema.ts
+// src/db/team-schema.ts - Fixed version without drizzle-zod conflicts
 import { z } from 'zod';
-import { createInsertSchema, createSelectSchema } from 'drizzle-zod';
-import { teams } from './schema.js';
 
-// Team schemas
-export const insertTeamSchema = createInsertSchema(teams, {
+// Manual Zod schemas (avoiding drizzle-zod compatibility issues)
+export const insertTeamSchema = z.object({
   name: z.string().min(1, 'Team name is required').max(100, 'Team name too long'),
   logoUrl: z.string().url('Invalid logo URL').max(500, 'Logo URL too long').nullable().optional(),
+  description: z.string().max(1000, 'Description too long').optional(),
 });
 
-export const selectTeamSchema = createSelectSchema(teams);
+export const selectTeamSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string(),
+  logoUrl: z.string().nullable(),
+  description: z.string().nullable(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
 
-export const updateTeamSchema = insertTeamSchema
-  .pick({
-    name: true,
-    logoUrl: true,
-  })
-  .partial();
+export const updateTeamSchema = z.object({
+  name: z.string().min(1, 'Team name is required').max(100, 'Team name too long').optional(),
+  logoUrl: z.string().url('Invalid logo URL').max(500, 'Logo URL too long').nullable().optional(),
+  description: z.string().max(1000, 'Description too long').optional(),
+});
 
 // API request/response types
 export type CreateTeamRequest = z.infer<typeof insertTeamSchema>;

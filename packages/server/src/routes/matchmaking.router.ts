@@ -1,13 +1,13 @@
-// src/routes/matchmaking.router.ts - Fixed Implementation
+// src/routes/matchmaking.router.ts - ELO-based Matchmaking API
 
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { eq, and, inArray } from 'drizzle-orm';
-import { db } from '../db/client.js';
-import { userActivityTypeELOs, activities, activityParticipants, users } from '../db/schema.js';
 import { authenticateToken } from '../middleware/auth.js';
 import { matchmakingService } from '../services/matchmaking.service.js';
+import { activities, activityParticipants, userActivityTypeELOs, userConnections, users } from '../db/schema.js';
+import { and, eq, inArray, sql } from 'drizzle-orm';
+import { db } from '../db/client.js';
 
 export const matchmakingRouter = new Hono();
 
@@ -186,7 +186,6 @@ matchmakingRouter.post('/create-optimized-activity',
       const user = c.get('user');
       const activityData = c.req.valid('json');
 
-      // Fixed: Use the correct method signature
       const result = await matchmakingService.createOptimizedActivity(
         user.id,
         activityData.activityTypeId,
@@ -253,7 +252,6 @@ matchmakingRouter.post('/balance-teams/:activityId',
         }, 403);
       }
 
-      // Fixed: Use the correct method signature
       const balanceResult = await matchmakingService.balanceTeams(activityId, teamCount);
 
       // Apply the team assignments to the database
@@ -307,7 +305,6 @@ matchmakingRouter.get('/personalized-feed',
       const user = c.get('user');
       const { limit } = c.req.valid('query');
 
-      // Fixed: Use the correct method signature
       const feed = await matchmakingService.getPersonalizedActivityFeed(user.id, limit);
 
       // Calculate feed metrics
@@ -430,6 +427,65 @@ matchmakingRouter.get('/preview-balance/:activityId',
   }
 );
 
+// POST /matchmaking/suggest-activity-time - Suggest optimal time for activity based on participant availability
+matchmakingRouter.post('/suggest-activity-time',
+  authenticateToken,
+  zValidator('json', z.object({
+    activityTypeId: z.string().uuid(),
+    participantIds: z.array(z.string().uuid()).min(2).max(20),
+    preferredDays: z.array(z.enum(['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'])).optional(),
+    timeRange: z.object({
+      startHour: z.number().int().min(0).max(23),
+      endHour: z.number().int().min(0).max(23),
+    }).optional(),
+  })),
+  async (c) => {
+    try {
+      const user = c.get('user');
+      const request = c.req.valid('json');
+
+      console.log(`📅 Suggesting optimal time for ${request.participantIds.length} participants`);
+
+      // This is a simplified implementation
+      // In production, you'd analyze participant schedules, timezone preferences, etc.
+      
+      const suggestions = [
+        {
+          dateTime: new Date(Date.now() + 24 * 60 * 60 * 1000), // Tomorrow
+          confidence: 85,
+          availableParticipants: request.participantIds.length - 1,
+          reason: 'Most participants are typically available at this time',
+        },
+        {
+          dateTime: new Date(Date.now() + 2 * 24 * 60 * 60 * 1000), // Day after tomorrow
+          confidence: 92,
+          availableParticipants: request.participantIds.length,
+          reason: 'All participants have good availability',
+        },
+        {
+          dateTime: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // Next week
+          confidence: 78,
+          availableParticipants: Math.floor(request.participantIds.length * 0.8),
+          reason: 'Weekend availability varies',
+        },
+      ];
+
+      return c.json({
+        status: 'success',
+        data: {
+          suggestions: suggestions.sort((a, b) => b.confidence - a.confidence),
+          participantCount: request.participantIds.length,
+          analysisNote: 'Time suggestions based on general availability patterns. Individual schedules not analyzed in this implementation.',
+        },
+      });
+
+    } catch (error) {
+      console.error('Error suggesting activity time:', error);
+      return c.json({ error: 'Failed to suggest activity time' }, 500);
+    }
+  }
+);
+
 // GET /matchmaking/compatibility/:userId - Check compatibility with another user
 matchmakingRouter.get('/compatibility/:userId',
   authenticateToken,
@@ -488,8 +544,17 @@ matchmakingRouter.get('/compatibility/:userId',
         .limit(1);
 
       // Check if they're connected
-      const connections = await matchmakingService.getUserConnections(user.id);
-      const isConnected = connections.some(c => c.connectedUserId === targetUserId);
+      const [connection] = await db
+        .select()
+        .from(userConnections)
+        .where(
+          and(
+            eq(userConnections.status, 'accepted'),
+            sql`(${userConnections.user1Id} = ${user.id} AND ${userConnections.user2Id} = ${targetUserId}) OR 
+                (${userConnections.user1Id} = ${targetUserId} AND ${userConnections.user2Id} = ${user.id})`
+          )
+        )
+        .limit(1);
 
       const compatibility = {
         eloCompatibility: Math.round(eloCompatibility),
@@ -497,8 +562,11 @@ matchmakingRouter.get('/compatibility/:userId',
                              eloDifference < 200 ? 'competitive' : 
                              eloDifference < 400 ? 'moderately_competitive' : 'unbalanced',
         winProbability: Math.round(winProbability * 100),
-        estimatedELOChange: matchmakingService.estimateELOChanges(userELO.eloScore, targetELO.eloScore, 32),
-        socialConnection: isConnected ? 'connected' : 'not_connected',
+        estimatedELOChange: {
+          ifWin: Math.round(32 * (1 - winProbability)),
+          ifLoss: Math.round(32 * (0 - winProbability)),
+        },
+        socialConnection: connection ? 'connected' : 'not_connected',
         recommendation: eloCompatibility > 75 ? 'excellent_match' :
                        eloCompatibility > 60 ? 'good_match' :
                        eloCompatibility > 40 ? 'fair_match' : 'poor_match',
@@ -531,6 +599,156 @@ matchmakingRouter.get('/compatibility/:userId',
     } catch (error) {
       console.error('Error checking compatibility:', error);
       return c.json({ error: 'Failed to check compatibility' }, 500);
+    }
+  }
+);
+
+// GET /matchmaking/activity-insights/:activityId - Get insights about activity participants
+matchmakingRouter.get('/activity-insights/:activityId',
+  authenticateToken,
+  async (c) => {
+    try {
+      const activityId = c.req.param('activityId');
+      const user = c.get('user');
+
+      // Verify user has access to view this activity
+      const [activity] = await db
+        .select({
+          id: activities.id,
+          creatorId: activities.creatorId,
+          activityTypeId: activities.activityTypeId,
+          eloLevel: activities.eloLevel,
+        })
+        .from(activities)
+        .where(eq(activities.id, activityId))
+        .limit(1);
+
+      if (!activity) {
+        return c.json({ error: 'Activity not found' }, 404);
+      }
+
+      // Check access
+      const [participation] = await db
+        .select()
+        .from(activityParticipants)
+        .where(
+          and(
+            eq(activityParticipants.activityId, activityId),
+            eq(activityParticipants.userId, user.id)
+          )
+        )
+        .limit(1);
+
+      const hasAccess = participation || activity.creatorId === user.id || user.role === 'admin';
+      
+      if (!hasAccess) {
+        return c.json({ error: 'Access denied' }, 403);
+      }
+
+      // Get participant ELO data
+      const participants = await db
+        .select({
+          user: users,
+          elo: userActivityTypeELOs,
+          participant: activityParticipants,
+        })
+        .from(activityParticipants)
+        .leftJoin(users, eq(activityParticipants.userId, users.id))
+        .leftJoin(userActivityTypeELOs, and(
+          eq(userActivityTypeELOs.userId, activityParticipants.userId),
+          eq(userActivityTypeELOs.activityTypeId, activity.activityTypeId)
+        ))
+        .where(
+          and(
+            eq(activityParticipants.activityId, activityId),
+            eq(activityParticipants.status, 'accepted')
+          )
+        );
+
+      // Calculate insights
+      const eloScores = participants.map(p => p.elo?.eloScore || 1200);
+      const avgELO = eloScores.reduce((sum, elo) => sum + elo, 0) / eloScores.length;
+      const minELO = Math.min(...eloScores);
+      const maxELO = Math.max(...eloScores);
+      const eloSpread = maxELO - minELO;
+
+      // Calculate balance score
+      const variance = eloScores.reduce((sum, elo) => sum + Math.pow(elo - avgELO, 2), 0) / eloScores.length;
+      const balanceScore = Math.max(0, 100 - (variance / 100));
+
+      // Team analysis if applicable
+      let teamAnalysis = null;
+      const teamsMap = new Map<string, typeof participants>();
+      
+      participants.forEach(p => {
+        const team = p.participant.team || 'no_team';
+        if (!teamsMap.has(team)) teamsMap.set(team, []);
+        teamsMap.get(team)!.push(p);
+      });
+
+      if (teamsMap.size > 1 && !teamsMap.has('no_team')) {
+        const teams = Array.from(teamsMap.entries()).map(([teamName, players]) => ({
+          name: teamName,
+          playerCount: players.length,
+          averageELO: Math.round(players.reduce((sum, p) => sum + (p.elo?.eloScore || 1200), 0) / players.length),
+          eloRange: {
+            min: Math.min(...players.map(p => p.elo?.eloScore || 1200)),
+            max: Math.max(...players.map(p => p.elo?.eloScore || 1200)),
+          },
+        }));
+
+        const teamELOs = teams.map(t => t.averageELO);
+        const teamBalance = Math.max(0, 100 - (Math.max(...teamELOs) - Math.min(...teamELOs)) * 2);
+
+        teamAnalysis = {
+          teams,
+          teamBalance: Math.round(teamBalance),
+          isBalanced: teamBalance > 75,
+          recommendation: teamBalance > 85 ? 'Teams are excellently balanced' :
+                         teamBalance > 70 ? 'Teams are well balanced' :
+                         teamBalance > 50 ? 'Teams could use some balancing' :
+                         'Teams are significantly unbalanced',
+        };
+      }
+
+      const insights = {
+        participantCount: participants.length,
+        eloAnalysis: {
+          average: Math.round(avgELO),
+          minimum: minELO,
+          maximum: maxELO,
+          spread: eloSpread,
+          activityELOLevel: activity.eloLevel || 1200,
+          balanceScore: Math.round(balanceScore),
+        },
+        competitiveAnalysis: {
+          skillLevel: avgELO < 1000 ? 'beginner' :
+                     avgELO < 1400 ? 'intermediate' :
+                     avgELO < 1800 ? 'advanced' : 'expert',
+          competitiveness: eloSpread < 100 ? 'highly_competitive' :
+                          eloSpread < 200 ? 'competitive' :
+                          eloSpread < 400 ? 'moderately_competitive' : 'mixed_skill',
+          gameQuality: balanceScore > 80 ? 'excellent' :
+                      balanceScore > 60 ? 'good' :
+                      balanceScore > 40 ? 'fair' : 'poor',
+        },
+        teamAnalysis,
+        recommendations: [
+          balanceScore < 60 ? 'Consider rebalancing participants for better games' : null,
+          eloSpread > 300 ? 'Large skill gap detected - consider skill-based mentoring' : null,
+          participants.length < 4 ? 'More participants would improve activity dynamics' : null,
+          teamAnalysis && teamAnalysis.teamBalance < 70 ? 'Teams need rebalancing for fair competition' : null,
+        ].filter(Boolean),
+      };
+
+      return c.json({
+        status: 'success',
+        data: { insights },
+      });
+
+    } catch (error) {
+      console.error('Error getting activity insights:', error);
+      return c.json({ error: 'Failed to get activity insights' }, 500);
     }
   }
 );

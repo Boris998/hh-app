@@ -271,6 +271,23 @@ export const userActivityTypeSkillSummaries = pgTable(
   })
 );
 
+export const teams = pgTable('teams', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  name: varchar('name', { length: 100 }).notNull(),
+  logoUrl: varchar('logo_url', { length: 500 }),
+  description: text('description'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+export const teamMembers = pgTable('team_members', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  role: varchar('role', { length: 50 }).default('member'), // 'captain', 'member', etc.
+  joinedAt: timestamp('joined_at').defaultNow().notNull(),
+});
+
 export const chatRooms = pgTable("chat_rooms", {
   id: uuid("id").defaultRandom().primaryKey(),
   publicId: uuid("public_id").defaultRandom().notNull().unique(),
@@ -380,6 +397,17 @@ export const usersRelations = relations(users, ({ many }) => ({
   activityParticipants: many(activityParticipants),
   sentChatMessages: many(activityChatMessages),
   chatReadStatuses: many(activityChatReadStatus),
+}));
+
+export const teamMembersRelations = relations(teamMembers, ({ one }) => ({
+  team: one(teams, {
+    fields: [teamMembers.teamId],
+    references: [teams.id],
+  }),
+  user: one(users, {
+    fields: [teamMembers.userId],
+    references: [users.id],
+  }),
 }));
 
 export const activityTypesRelations = relations(activityTypes, ({ many }) => ({

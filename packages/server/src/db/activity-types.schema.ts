@@ -21,8 +21,16 @@ export const defaultELOSettingsSchema = z.object({
   }),
   provisionalGames: z.number().min(5).max(50).default(30),
   minimumParticipants: z.number().min(1).max(20).default(2),
+  skillInfluence: z.number().min(0).max(1),
   teamBased: z.boolean().default(false),
-  allowDraws: z.boolean().default(false)
+  eloRanges: z.object({
+    beginner: z.object({ min: z.number(), max: z.number() }),
+    intermediate: z.object({ min: z.number(), max: z.number() }),
+    advanced: z.object({ min: z.number(), max: z.number() }),
+    expert: z.object({ min: z.number(), max: z.number() })
+  }).optional(),
+  allowDraws: z.boolean().default(false),
+  specialRules: z.record(z.any()).optional()
 });
 
 // Activity Category enum

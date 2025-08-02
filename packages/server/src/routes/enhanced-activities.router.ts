@@ -17,6 +17,8 @@ import {
 import { authenticateToken } from "../middleware/auth.js";
 import { eloProcessingService } from "../services/elo-processing.service.js";
 
+console.log('🧪 ELO Service loaded:', typeof eloProcessingService?.onActivityCompletion);
+
 export const activitiesRouter = new Hono();
 
 // Activity creation schema
@@ -656,31 +658,14 @@ activitiesRouter.post(
   async (c) => {
     try {
       const activityId = c.req.param("id");
-      const completionData = c.req.valid("json");
       const user = c.get("user");
+      const completionData = c.req.valid("json");
 
       console.log(
-        `🏁 Activity completion request for ${activityId} by ${user.username} with ${completionData.results.length} results`
+        `🏁 Completing activity ${activityId} with ${completionData.results.length} results`
       );
 
-      // Check if user is the creator
-      const [activity] = await db 
-        .select()
-        .from(activities)
-        .where(
-          and(eq(activities.id, activityId), eq(activities.creatorId, user.id))
-        )
-        .limit(1);
-
-      if (!activity) {
-        return c.json({ error: "Activity not found or unauthorized" }, 404);
-      }
-
-      if (activity.completionStatus === "completed") {
-        return c.json({ error: "Activity already completed" }, 400);
-      }
-
-      // Validate that all participants have results
+      // ✅ This part should work - check participant validation
       const allParticipants = await db
         .select({ userId: activityParticipants.userId })
         .from(activityParticipants)
@@ -691,6 +676,7 @@ activitiesRouter.post(
           )
         );
 
+      // ✅ Validate results
       const resultUserIds = new Set(
         completionData.results.map((r) => r.userId)
       );
@@ -708,7 +694,7 @@ activitiesRouter.post(
         );
       }
 
-      // 🆕 Process activity completion with ELO integration
+      // 🚨 KEY ISSUE: Make sure you're calling the ELO service correctly
       const activityCompletionData = {
         activityId,
         results: completionData.results,
@@ -720,7 +706,9 @@ activitiesRouter.post(
 
       if (completionData.processELOImmediately) {
         try {
-          // Process ELO calculation immediately
+          // ✅ This should call your ELO service
+          console.log("🎯 Calling ELO processing service...");
+
           eloResults = await eloProcessingService.onActivityCompletion(
             activityCompletionData
           );
@@ -735,26 +723,22 @@ activitiesRouter.post(
             );
           }
         } catch (eloError) {
-          console.error(
-            "ELO calculation failed but activity completion succeeded:",
-            eloError
-          );
+          console.error("ELO calculation failed:", eloError);
           // Don't fail the entire request if ELO calculation fails
-          // The ELO service has retry mechanisms
         }
-      } else {
-        // Just mark as completed, ELO will be processed later
-        await eloProcessingService.onActivityCompletion({
-          ...activityCompletionData,
-          // This will mark activity as complete but defer ELO calculation
-        });
       }
 
-      // Get processing status for response
-      const eloStatus = await eloProcessingService.getProcessingStatus(
-        activityId
+      console.log("🔍 About to call eloProcessingService.onActivityCompletion");
+      console.log("📊 Activity completion data:", activityCompletionData);
+
+      // 3. Check if the ELO service method exists:
+
+      console.log(
+        "🧪 ELO service type:",
+        typeof eloProcessingService.onActivityCompletion
       );
 
+      // ✅ Return proper response
       return c.json({
         status: "success",
         data: {
@@ -764,7 +748,7 @@ activitiesRouter.post(
             completedAt: new Date(),
           },
           eloProcessing: {
-            status: eloStatus.status,
+            status: eloResults ? "completed" : "not_started",
             resultsCalculated: eloResults !== null,
             participantsAffected: eloResults?.length || 0,
             averageELOChange: eloResults

@@ -660,11 +660,11 @@ activitiesRouter.post(
       const user = c.get("user");
 
       console.log(
-        `🏁 Activity completion request for ${activityId} by ${user.username}`
+        `🏁 Activity completion request for ${activityId} by ${user.username} with ${completionData.results.length} results`
       );
 
       // Check if user is the creator
-      const [activity] = await db
+      const [activity] = await db 
         .select()
         .from(activities)
         .where(

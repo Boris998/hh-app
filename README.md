@@ -58,7 +58,7 @@ drizzle.config.ts                    # Updated schema paths
 🎯 API Endpoints
 Public Endpoints
 GET    /api/activity-types                    # List all active types
-GET    /api/activity-types/:publicId          # Get specific type
+GET    //activity-types/:publicId          # Get specific type
 GET    /api/activity-types/category/:category # Filter by category  
 GET    /api/activity-types/search             # Search activities
 GET    /api/activity-types/:publicId/skills   # Get skill categories

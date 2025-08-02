@@ -1,22 +1,25 @@
 // src/services/elo-processing.service.ts - ELO Processing Pipeline & Triggers
 
-import { db } from '../db/client.js';
-import { 
-  activities, 
-  activityParticipants, 
+import { db } from "../db/client.js";
+import {
+  activities,
+  activityParticipants,
   activityTypes,
   activityELOStatus,
   userActivityTypeELOs,
-  userActivitySkillRatings 
-} from '../db/schema.js';
-import { eq, and, inArray, isNull } from 'drizzle-orm';
-import { eloCalculationService, type ELOCalculationResult } from './elo-calc.service.js';
+  userActivitySkillRatings,
+} from "../db/schema.js";
+import { eq, and, inArray, isNull, sql } from "drizzle-orm";
+import {
+  eloCalculationService,
+  type ELOCalculationResult,
+} from "./elo-calc.service.js";
 
 export interface ActivityCompletionData {
   activityId: string;
   results: Array<{
     userId: string;
-    finalResult: 'win' | 'loss' | 'draw';
+    finalResult: "win" | "loss" | "draw";
     performanceNotes?: string;
   }>;
   completedBy: string; // User ID of who marked activity complete
@@ -32,48 +35,55 @@ export interface ELOProcessingStats {
 }
 
 export class ELOProcessingService {
-  private processingQueue: Map<string, Promise<ELOCalculationResult[]>> = new Map();
+  private processingQueue: Map<string, Promise<ELOCalculationResult[]>> =
+    new Map();
 
   /**
    * Main trigger when activity is marked as completed
    * This is called from the enhanced-activities.router.ts completion endpoint
    */
-  async onActivityCompletion(completionData: ActivityCompletionData): Promise<ELOCalculationResult[] | null> {
+  async onActivityCompletion(
+    completionData: ActivityCompletionData
+  ): Promise<ELOCalculationResult[] | null> {
     const { activityId, results, completedBy } = completionData;
-    
+
     console.log(`🏁 Activity completion triggered for: ${activityId}`);
     console.log(`📊 Results for ${results.length} participants`);
-    
+
     try {
       // Step 1: Validate completion data
       await this.validateCompletionData(completionData);
-      
+
       // Step 2: Update participant results in database
       await this.updateParticipantResults(activityId, results);
-      
+
       // Step 3: Mark activity as completed
       await this.markActivityCompleted(activityId, completedBy);
-      
+
       // Step 4: Check if activity qualifies for ELO calculation
       const isELOEligible = await this.checkELOEligibility(activityId);
-      
+
       if (!isELOEligible) {
-        console.log(`ℹ️  Activity ${activityId} is not eligible for ELO calculation`);
+        console.log(
+          `ℹ️  Activity ${activityId} is not eligible for ELO calculation`
+        );
         return null;
       }
-      
+
       // Step 5: Initialize ELO calculation status
       await this.initializeELOStatus(activityId);
-      
+
       // Step 6: Queue ELO calculation (async processing)
       const calculationPromise = this.processELOCalculation(activityId);
       this.processingQueue.set(activityId, calculationPromise);
-      
+
       // Return promise for immediate processing (can be awaited or run in background)
       return await calculationPromise;
-      
     } catch (error) {
-      console.error(`❌ Failed to process activity completion for ${activityId}:`, error);
+      console.error(
+        `❌ Failed to process activity completion for ${activityId}:`,
+        error
+      );
       await this.handleProcessingError(activityId, error);
       throw error;
     }
@@ -82,37 +92,48 @@ export class ELOProcessingService {
   /**
    * Process ELO calculation with comprehensive error handling
    */
-  private async processELOCalculation(activityId: string): Promise<ELOCalculationResult[]> {
+  private async processELOCalculation(
+    activityId: string
+  ): Promise<ELOCalculationResult[]> {
     const startTime = Date.now();
-    
+
     try {
       console.log(`🧮 Starting ELO calculation for activity: ${activityId}`);
-      
+
       // Run the ELO calculation
-      const results = await eloCalculationService.calculateActivityELO(activityId);
-      
+      const results = await eloCalculationService.calculateActivityELO(
+        activityId
+      );
+
       const processingTime = Date.now() - startTime;
       console.log(`⚡ ELO calculation completed in ${processingTime}ms`);
       console.log(`📈 Updated ELO for ${results.length} players`);
-      
+
       // Log summary of changes
       this.logELOChanges(activityId, results);
-      
+
       // Update processing stats
-      await this.updateProcessingStats(activityId, results, processingTime, true);
-      
+      await this.updateProcessingStats(
+        activityId,
+        results,
+        processingTime,
+        true
+      );
+
       // Clean up processing queue
       this.processingQueue.delete(activityId);
-      
+
       return results;
-      
     } catch (error) {
       const processingTime = Date.now() - startTime;
-      console.error(`💥 ELO calculation failed for ${activityId} after ${processingTime}ms:`, error);
-      
+      console.error(
+        `💥 ELO calculation failed for ${activityId} after ${processingTime}ms:`,
+        error
+      );
+
       await this.updateProcessingStats(activityId, [], processingTime, false);
       this.processingQueue.delete(activityId);
-      
+
       throw error;
     }
   }
@@ -120,9 +141,11 @@ export class ELOProcessingService {
   /**
    * Validate that completion data is correct and complete
    */
-  private async validateCompletionData(data: ActivityCompletionData): Promise<void> {
+  private async validateCompletionData(
+    data: ActivityCompletionData
+  ): Promise<void> {
     const { activityId, results } = data;
-    
+
     // Check activity exists and is not already completed
     const [activity] = await db
       .select({
@@ -136,32 +159,34 @@ export class ELOProcessingService {
       .limit(1);
 
     if (!activity) {
-      throw new Error('Activity not found');
+      throw new Error("Activity not found");
     }
 
-    if (activity.completionStatus === 'completed') {
-      throw new Error('Activity is already completed');
+    if (activity.completionStatus === "completed") {
+      throw new Error("Activity is already completed");
     }
 
     // Validate all result participants are actual activity participants
-    const participantIds = results.map(r => r.userId);
+    const participantIds = results.map((r) => r.userId);
     const actualParticipants = await db
       .select({ userId: activityParticipants.userId })
       .from(activityParticipants)
       .where(
         and(
           eq(activityParticipants.activityId, activityId),
-          eq(activityParticipants.status, 'accepted'),
+          eq(activityParticipants.status, "accepted"),
           inArray(activityParticipants.userId, participantIds)
         )
       );
 
     if (actualParticipants.length !== participantIds.length) {
-      throw new Error('Some result participants are not actual activity participants');
+      throw new Error(
+        "Some result participants are not actual activity participants"
+      );
     }
 
     // Validate result values
-    const validResults = ['win', 'loss', 'draw'];
+    const validResults = ["win", "loss", "draw"];
     for (const result of results) {
       if (!validResults.includes(result.finalResult)) {
         throw new Error(`Invalid result value: ${result.finalResult}`);
@@ -180,10 +205,10 @@ export class ELOProcessingService {
 
     if (activityType) {
       const settings = activityType.allowDraws as any;
-      const hasDraws = results.some(r => r.finalResult === 'draw');
-      
+      const hasDraws = results.some((r) => r.finalResult === "draw");
+
       if (hasDraws && settings?.allowDraws === false) {
-        throw new Error('This activity type does not allow draws');
+        throw new Error("This activity type does not allow draws");
       }
     }
   }
@@ -192,11 +217,11 @@ export class ELOProcessingService {
    * Update participant results in the database
    */
   private async updateParticipantResults(
-    activityId: string, 
-    results: ActivityCompletionData['results']
+    activityId: string,
+    results: ActivityCompletionData["results"]
   ): Promise<void> {
     console.log(`📝 Updating results for ${results.length} participants`);
-    
+
     await db.transaction(async (tx) => {
       for (const result of results) {
         await tx
@@ -213,22 +238,25 @@ export class ELOProcessingService {
           );
       }
     });
-    
+
     console.log(`✅ Updated participant results in database`);
   }
 
   /**
    * Mark activity as completed
    */
-  private async markActivityCompleted(activityId: string, completedBy: string): Promise<void> {
+  private async markActivityCompleted(
+    activityId: string,
+    completedBy: string
+  ): Promise<void> {
     await db
       .update(activities)
       .set({
-        completionStatus: 'completed',
+        completionStatus: "completed",
         updatedAt: new Date(),
       })
       .where(eq(activities.id, activityId));
-    
+
     console.log(`✅ Activity ${activityId} marked as completed`);
   }
 
@@ -256,12 +284,14 @@ export class ELOProcessingService {
       .where(
         and(
           eq(activityParticipants.activityId, activityId),
-          eq(activityParticipants.status, 'accepted')
+          eq(activityParticipants.status, "accepted")
         )
       );
 
     if (participantCount.length < 2) {
-      console.log(`⚠️  Activity ${activityId} has insufficient participants for ELO`);
+      console.log(
+        `⚠️  Activity ${activityId} has insufficient participants for ELO`
+      );
       return false;
     }
 
@@ -272,7 +302,7 @@ export class ELOProcessingService {
       .where(eq(activityELOStatus.activityId, activityId))
       .limit(1);
 
-    if (eloStatus?.status === 'completed') {
+    if (eloStatus?.status === "completed") {
       console.log(`ℹ️  ELO already calculated for activity ${activityId}`);
       return false;
     }
@@ -288,23 +318,29 @@ export class ELOProcessingService {
       .insert(activityELOStatus)
       .values({
         activityId,
-        status: 'pending',
+        status: "pending",
+        lockedBy: null,
+        lockedAt: null,
         retryCount: 0,
       })
       .onConflictDoUpdate({
         target: activityELOStatus.activityId,
         set: {
-          status: 'pending',
+          status: "pending",
           retryCount: 0,
           errorMessage: null,
-        }
+        },
       });
+    console.log(`📊 ELO status initialized for activity: ${activityId}`);
   }
 
   /**
    * Handle processing errors with retry logic
    */
-  private async handleProcessingError(activityId: string, error: any): Promise<void> {
+  private async handleProcessingError(
+    activityId: string,
+    error: any
+  ): Promise<void> {
     try {
       const [currentStatus] = await db
         .select({
@@ -319,12 +355,14 @@ export class ELOProcessingService {
       const maxRetries = 3;
 
       if (retryCount < maxRetries) {
-        console.log(`🔄 Scheduling retry ${retryCount}/${maxRetries} for activity ${activityId}`);
-        
+        console.log(
+          `🔄 Scheduling retry ${retryCount}/${maxRetries} for activity ${activityId}`
+        );
+
         await db
           .update(activityELOStatus)
           .set({
-            status: 'pending',
+            status: "pending",
             retryCount,
             errorMessage: error.message,
           })
@@ -335,21 +373,23 @@ export class ELOProcessingService {
         setTimeout(() => {
           this.retryELOCalculation(activityId);
         }, retryDelay);
-        
       } else {
         console.error(`💀 Max retries exceeded for activity ${activityId}`);
-        
+
         await db
           .update(activityELOStatus)
           .set({
-            status: 'error',
+            status: "error",
             retryCount,
             errorMessage: `Max retries exceeded: ${error.message}`,
           })
           .where(eq(activityELOStatus.activityId, activityId));
       }
     } catch (statusError) {
-      console.error(`Failed to update error status for activity ${activityId}:`, statusError);
+      console.error(
+        `Failed to update error status for activity ${activityId}:`,
+        statusError
+      );
     }
   }
 
@@ -359,18 +399,19 @@ export class ELOProcessingService {
   private async retryELOCalculation(activityId: string): Promise<void> {
     try {
       console.log(`🔁 Retrying ELO calculation for activity: ${activityId}`);
-      
+
       // Check if already processed
       if (this.processingQueue.has(activityId)) {
-        console.log(`⏸️  ELO calculation already in progress for ${activityId}`);
+        console.log(
+          `⏸️  ELO calculation already in progress for ${activityId}`
+        );
         return;
       }
 
       const calculationPromise = this.processELOCalculation(activityId);
       this.processingQueue.set(activityId, calculationPromise);
-      
+
       await calculationPromise;
-      
     } catch (error) {
       console.error(`Failed retry for activity ${activityId}:`, error);
       await this.handleProcessingError(activityId, error);
@@ -380,22 +421,38 @@ export class ELOProcessingService {
   /**
    * Log ELO changes for debugging and monitoring
    */
-  private logELOChanges(activityId: string, results: ELOCalculationResult[]): void {
+  private logELOChanges(
+    activityId: string,
+    results: ELOCalculationResult[]
+  ): void {
     console.log(`\n📊 ELO Changes Summary for Activity ${activityId}:`);
-    console.log(`${'Player'.padEnd(20)} ${'Old ELO'.padEnd(10)} ${'New ELO'.padEnd(10)} ${'Change'.padEnd(8)} ${'Skill Bonus'.padEnd(12)}`);
-    console.log('─'.repeat(70));
-    
+    console.log(
+      `${"Player".padEnd(20)} ${"Old ELO".padEnd(10)} ${"New ELO".padEnd(
+        10
+      )} ${"Change".padEnd(8)} ${"Skill Bonus".padEnd(12)}`
+    );
+    console.log("─".repeat(70));
+
     for (const result of results) {
       const playerDisplay = result.userId.slice(0, 18).padEnd(20);
       const oldELO = result.oldELO.toString().padEnd(10);
       const newELO = result.newELO.toString().padEnd(10);
-      const change = (result.eloChange >= 0 ? '+' : '') + result.eloChange.toString().padEnd(7);
-      const skillBonus = (result.skillBonus >= 0 ? '+' : '') + result.skillBonus.toString().padEnd(12);
-      
-      console.log(`${playerDisplay} ${oldELO} ${newELO} ${change} ${skillBonus}`);
+      const change =
+        (result.eloChange >= 0 ? "+" : "") +
+        result.eloChange.toString().padEnd(7);
+      const skillBonus =
+        (result.skillBonus >= 0 ? "+" : "") +
+        result.skillBonus.toString().padEnd(12);
+
+      console.log(
+        `${playerDisplay} ${oldELO} ${newELO} ${change} ${skillBonus}`
+      );
     }
-    
-    const totalChanges = results.reduce((sum, r) => sum + Math.abs(r.eloChange), 0);
+
+    const totalChanges = results.reduce(
+      (sum, r) => sum + Math.abs(r.eloChange),
+      0
+    );
     const avgChange = totalChanges / results.length;
     console.log(`\n📈 Average ELO change: ${avgChange.toFixed(1)} points`);
   }
@@ -409,20 +466,50 @@ export class ELOProcessingService {
     processingTime: number,
     success: boolean
   ): Promise<void> {
-    // In a production system, this would update monitoring/metrics tables
-    // For now, just log the stats
-    const stats = {
-      activityId,
-      success,
-      processingTime,
-      playersAffected: results.length,
-      timestamp: new Date(),
-    };
-    
-    console.log(`📊 Processing Stats:`, stats);
-    
-    // Could store in a separate stats table for monitoring dashboard
-    // await db.insert(eloProcessingStats).values(stats);
+    try {
+      if (success) {
+        await db
+          .update(activityELOStatus)
+          .set({
+            status: "completed",
+            completedAt: new Date(),
+            errorMessage: null,
+            lockedBy: null,
+            lockedAt: null,
+          })
+          .where(eq(activityELOStatus.activityId, activityId));
+
+        console.log(
+          `📊 ELO calculation completed successfully for activity ${activityId}`
+        );
+        console.log(`⚡ Processing time: ${processingTime}ms`);
+        console.log(`👥 Players affected: ${results.length}`);
+
+        if (results.length > 0) {
+          const avgChange =
+            results.reduce((sum, r) => sum + Math.abs(r.eloChange), 0) /
+            results.length;
+          console.log(`📈 Average ELO change: ${avgChange.toFixed(1)} points`);
+        }
+      } else {
+        await db
+          .update(activityELOStatus)
+          .set({
+            status: "error",
+            errorMessage: "ELO calculation failed",
+            retryCount: sql`${activityELOStatus.retryCount} + 1`,
+          })
+          .where(eq(activityELOStatus.activityId, activityId));
+
+        console.log(`❌ ELO calculation failed for activity ${activityId}`);
+        console.log(`⏱️  Failed after: ${processingTime}ms`);
+      }
+    } catch (error) {
+      console.error(
+        `Failed to update processing stats for activity ${activityId}:`,
+        error
+      );
+    }
   }
 
   /**
@@ -441,9 +528,9 @@ export class ELOProcessingService {
       .limit(1);
 
     const inProgress = this.processingQueue.has(activityId);
-    
+
     return {
-      status: dbStatus?.status || 'not_started',
+      status: dbStatus?.status || "not_started",
       inProgress,
       error: dbStatus?.errorMessage || undefined,
       completedAt: dbStatus?.completedAt || undefined,
@@ -453,21 +540,26 @@ export class ELOProcessingService {
   /**
    * Manual trigger for ELO recalculation (admin function)
    */
-  async recalculateActivityELO(activityId: string, adminUserId: string): Promise<ELOCalculationResult[]> {
-    console.log(`🔧 Manual ELO recalculation triggered by admin ${adminUserId} for activity ${activityId}`);
-    
+  async recalculateActivityELO(
+    activityId: string,
+    adminUserId: string
+  ): Promise<ELOCalculationResult[]> {
+    console.log(
+      `🔧 Manual ELO recalculation triggered by admin ${adminUserId} for activity ${activityId}`
+    );
+
     // Reset ELO status to allow recalculation
     await db
       .update(activityELOStatus)
       .set({
-        status: 'pending',
+        status: "pending",
         retryCount: 0,
         errorMessage: null,
         lockedBy: null,
         lockedAt: null,
       })
       .where(eq(activityELOStatus.activityId, activityId));
-    
+
     // Process calculation
     return await this.processELOCalculation(activityId);
   }
@@ -477,11 +569,11 @@ export class ELOProcessingService {
    */
   async batchProcessPendingELO(): Promise<ELOProcessingStats> {
     console.log(`🔄 Starting batch processing of pending ELO calculations`);
-    
+
     const pendingActivities = await db
       .select({ activityId: activityELOStatus.activityId })
       .from(activityELOStatus)
-      .where(eq(activityELOStatus.status, 'pending'));
+      .where(eq(activityELOStatus.status, "pending"));
 
     const stats: ELOProcessingStats = {
       totalActivitiesProcessed: pendingActivities.length,
@@ -495,26 +587,31 @@ export class ELOProcessingService {
 
     for (const { activityId } of pendingActivities) {
       const startTime = Date.now();
-      
+
       try {
         const results = await this.processELOCalculation(activityId);
         stats.successfulCalculations++;
         stats.playersAffected += results.length;
-        
+
         const processingTime = Date.now() - startTime;
         totalProcessingTime += processingTime;
-        
-        console.log(`✅ Batch processed activity ${activityId} in ${processingTime}ms`);
-        
+
+        console.log(
+          `✅ Batch processed activity ${activityId} in ${processingTime}ms`
+        );
       } catch (error) {
         stats.failedCalculations++;
-        console.error(`❌ Batch processing failed for activity ${activityId}:`, error);
+        console.error(
+          `❌ Batch processing failed for activity ${activityId}:`,
+          error
+        );
       }
     }
 
-    stats.averageProcessingTime = stats.totalActivitiesProcessed > 0 
-      ? totalProcessingTime / stats.totalActivitiesProcessed 
-      : 0;
+    stats.averageProcessingTime =
+      stats.totalActivitiesProcessed > 0
+        ? totalProcessingTime / stats.totalActivitiesProcessed
+        : 0;
 
     console.log(`🏁 Batch processing completed:`, stats);
     return stats;
@@ -526,13 +623,13 @@ export class ELOProcessingService {
   async recoverStaleCalculations(): Promise<number> {
     const staleTimeout = 10 * 60 * 1000; // 10 minutes
     const staleTimestamp = new Date(Date.now() - staleTimeout);
-    
+
     const staleCalculations = await db
       .select({ activityId: activityELOStatus.activityId })
       .from(activityELOStatus)
       .where(
         and(
-          eq(activityELOStatus.status, 'calculating'),
+          eq(activityELOStatus.status, "calculating")
           // lt(activityELOStatus.lockedAt, staleTimestamp) // Uncomment when implementing
         )
       );
@@ -541,11 +638,11 @@ export class ELOProcessingService {
 
     for (const { activityId } of staleCalculations) {
       console.log(`🔄 Recovering stale calculation for activity ${activityId}`);
-      
+
       await db
         .update(activityELOStatus)
         .set({
-          status: 'pending',
+          status: "pending",
           lockedBy: null,
           lockedAt: null,
         })

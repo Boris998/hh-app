@@ -1,4 +1,4 @@
-// src/routes/auth.router.ts - FIXED with real database validation
+// src/routes/auth.router.ts - FIXED with registration endpoint
 
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
@@ -13,6 +13,13 @@ import { authenticateToken, type User } from '../middleware/auth.js';
 export const authRouter = new Hono();
 
 // Validation schemas
+const RegisterSchema = z.object({
+  username: z.string().min(3, 'Username must be at least 3 characters').max(50),
+  email: z.string().email('Invalid email format'),
+  password: z.string().min(8, 'Password must be at least 8 characters'),
+  avatarUrl: z.string().url().optional()
+});
+
 const LoginSchema = z.object({
   email: z.string().email('Invalid email format'),
   password: z.string().min(1, 'Password is required')
@@ -20,6 +27,83 @@ const LoginSchema = z.object({
 
 const RefreshSchema = z.object({
   refreshToken: z.string().min(1, 'Refresh token is required')
+});
+
+// POST /auth/register - User registration
+authRouter.post('/register', zValidator('json', RegisterSchema), async (c) => {
+  const { username, email, password, avatarUrl } = c.req.valid('json');
+  
+  try {
+    console.log(`📝 Registration attempt for: ${username} (${email})`);
+    
+    // Check if user already exists
+    const existingUser = await db
+      .select()
+      .from(users)
+      .where(eq(users.email, email))
+      .limit(1);
+    
+    if (existingUser.length > 0) {
+      console.log(`❌ User already exists: ${email}`);
+      return c.json({ error: 'User with this email already exists' }, 409);
+    }
+
+    // Check if username is taken
+    const existingUsername = await db
+      .select()
+      .from(users)
+      .where(eq(users.username, username))
+      .limit(1);
+    
+    if (existingUsername.length > 0) {
+      console.log(`❌ Username already taken: ${username}`);
+      return c.json({ error: 'Username is already taken' }, 409);
+    }
+    
+    // Hash password
+    const passwordHash = await bcrypt.hash(password, 12);
+    
+    // Create new user
+    const [newUser] = await db
+      .insert(users)
+      .values({
+        username,
+        email,
+        passwordHash,
+        avatarUrl: avatarUrl || null,
+        role: 'user',
+      })
+      .returning();
+    
+    console.log(`✅ User created: ${newUser.username} (${newUser.id})`);
+    
+    // Create session tokens for immediate login
+    const tokens = await SessionService.createSession({
+      id: newUser.id,
+      email: newUser.email,
+      role: newUser.role
+    });
+    
+    return c.json({
+      status: 'success',
+      data: {
+        user: {
+          id: newUser.id,
+          publicId: newUser.publicId,
+          username: newUser.username,
+          email: newUser.email,
+          avatarUrl: newUser.avatarUrl,
+          role: newUser.role
+        },
+        tokens
+      },
+      message: 'Registration successful'
+    }, 201);
+    
+  } catch (error) {
+    console.error('Registration error:', error);
+    return c.json({ error: 'Failed to create user account' }, 500);
+  }
 });
 
 // POST /auth/login

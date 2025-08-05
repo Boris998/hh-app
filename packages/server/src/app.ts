@@ -10,6 +10,7 @@ import { authRouter } from './routes/auth.router.js';
 import { messagingRouter } from './routes/messaging.router.js';
 import { activitiesRouter } from './routes/enhanced-activities.router.js';
 import { activityChatRouter } from './routes/activity-chat.router.js';
+import deltaRouter from './routes/delta.router.js';
 
 const app = new Hono();
 
@@ -47,7 +48,8 @@ const apiRoutes = app
   .route('/activity-types', activityTypesRouter)
   .route('/messaging', messagingRouter)
   .route('/activities', activitiesRouter)
-  .route('/activities', activityChatRouter);
+  .route('/activities', activityChatRouter)
+  .route('/delta', deltaRouter)
   // .route('/ws', websocketRouter);  
 
 // Error handling middleware (should be last)

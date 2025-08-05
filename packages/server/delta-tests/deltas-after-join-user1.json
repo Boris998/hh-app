@@ -1,0 +1,69 @@
+{
+  "status": "success",
+  "data": {
+    "hasChanges": true,
+    "changes": [
+      {
+        "id": "de085743-5fbc-40f3-bb59-06d1326184f2",
+        "entityType": "activity",
+        "entityId": "52e072cd-edef-475d-961a-c640b3f415fa",
+        "changeType": "update",
+        "affectedUserId": "dd363cc7-304f-49a6-9280-c39b83d7359e",
+        "relatedEntityId": null,
+        "previousData": {
+          "participantCount": 1
+        },
+        "newData": {
+          "joinedBy": "0a4b247c-b155-42d8-9d28-66b4cd9aaf9d",
+          "newParticipant": "0a4b247c-b155-42d8-9d28-66b4cd9aaf9d",
+          "participantCount": 2
+        },
+        "changeDetails": null,
+        "triggeredBy": "0a4b247c-b155-42d8-9d28-66b4cd9aaf9d",
+        "changeSource": "user_action",
+        "createdAt": "2025-08-05T20:46:27.869Z"
+      },
+      {
+        "id": "2860c9fb-3e8c-4937-83ba-ac975a476dac",
+        "entityType": "activity",
+        "entityId": "52e072cd-edef-475d-961a-c640b3f415fa",
+        "changeType": "create",
+        "affectedUserId": "dd363cc7-304f-49a6-9280-c39b83d7359e",
+        "relatedEntityId": null,
+        "previousData": null,
+        "newData": {
+          "eloLevel": 1260,
+          "createdBy": "dd363cc7-304f-49a6-9280-c39b83d7359e",
+          "description": "Delta Test Basketball Game",
+          "activityTypeId": "e1bcf825-7f1f-475f-aaf9-dcd91009e9b6"
+        },
+        "changeDetails": null,
+        "triggeredBy": "dd363cc7-304f-49a6-9280-c39b83d7359e",
+        "changeSource": "user_action",
+        "createdAt": "2025-08-05T20:46:25.117Z"
+      }
+    ],
+    "newCursors": {
+      "lastELOSync": "2025-08-05T20:41:40.938Z",
+      "lastActivitySync": "2025-08-05T20:46:33.124Z",
+      "lastSkillRatingSync": "2025-08-05T14:23:38.877Z",
+      "lastConnectionSync": "2025-08-05T14:23:38.877Z",
+      "lastMatchmakingSync": "2025-08-05T14:23:38.877Z"
+    },
+    "metadata": {
+      "totalChanges": 2,
+      "changeTypes": {
+        "activity": 2
+      },
+      "oldestChange": "2025-08-05T20:46:25.117Z",
+      "newestChange": "2025-08-05T20:46:27.869Z"
+    },
+    "recommendedPollInterval": 5000
+  },
+  "metadata": {
+    "timestamp": "2025-08-05T20:46:33.430Z",
+    "userId": "dd363cc7-304f-49a6-9280-c39b83d7359e",
+    "clientType": "web",
+    "recommendedNextPoll": "2025-08-05T20:46:38.430Z"
+  }
+}

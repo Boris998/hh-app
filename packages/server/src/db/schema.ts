@@ -12,6 +12,8 @@ import {
   unique,
 } from "drizzle-orm/pg-core";
 
+export * from './delta-tracking.schema';
+
 // Enums
 export const userRoleEnum = pgEnum("user_role", ["admin", "user", "moderator"]);
 export const connectionStatusEnum = pgEnum("connection_status", [

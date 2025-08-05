@@ -1,0 +1,17 @@
+{
+  "success": false,
+  "error": {
+    "issues": [
+      {
+        "code": "invalid_type",
+        "expected": "boolean",
+        "received": "string",
+        "path": [
+          "forceRefresh"
+        ],
+        "message": "Expected boolean, received string"
+      }
+    ],
+    "name": "ZodError"
+  }
+}

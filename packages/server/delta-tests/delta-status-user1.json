@@ -1,0 +1,24 @@
+{
+  "status": "success",
+  "data": {
+    "deltaTracking": {
+      "enabled": true,
+      "lastSyncTimes": {
+        "elo": "2025-08-05T20:41:40.938Z",
+        "activity": "2025-08-05T20:42:45.244Z",
+        "skillRating": "2025-08-05T14:23:38.877Z",
+        "connection": "2025-08-05T14:23:38.877Z",
+        "matchmaking": "2025-08-05T14:23:38.877Z"
+      },
+      "clientInfo": {
+        "type": "web",
+        "lastActive": "2025-08-05T20:42:45.244Z",
+        "preferredPollInterval": 5000
+      },
+      "systemInfo": {
+        "serverTime": "2025-08-05T20:46:22.781Z",
+        "uptime": 10.510868125
+      }
+    }
+  }
+}

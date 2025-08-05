@@ -1,0 +1,105 @@
+{
+  "status": "success",
+  "data": {
+    "hasChanges": true,
+    "changes": [
+      {
+        "id": "f171ad9e-a091-4cee-b98b-a12275cf84c1",
+        "entityType": "activity",
+        "entityId": "52e072cd-edef-475d-961a-c640b3f415fa",
+        "changeType": "update",
+        "affectedUserId": "0a4b247c-b155-42d8-9d28-66b4cd9aaf9d",
+        "relatedEntityId": null,
+        "previousData": null,
+        "newData": {
+          "processingTime": 6859,
+          "playersAffected": 2,
+          "averageELOChange": 12,
+          "eloProcessingComplete": true
+        },
+        "changeDetails": null,
+        "triggeredBy": "dd363cc7-304f-49a6-9280-c39b83d7359e",
+        "changeSource": "user_action",
+        "createdAt": "2025-08-05T20:46:47.193Z"
+      },
+      {
+        "id": "c6cb895a-b0bc-4b0e-ab1e-a5a3b812b87b",
+        "entityType": "elo",
+        "entityId": "0a4b247c-b155-42d8-9d28-66b4cd9aaf9d-e1bcf825-7f1f-475f-aaf9-dcd91009e9b6",
+        "changeType": "update",
+        "affectedUserId": "0a4b247c-b155-42d8-9d28-66b4cd9aaf9d",
+        "relatedEntityId": "52e072cd-edef-475d-961a-c640b3f415fa",
+        "previousData": {
+          "eloScore": 1115
+        },
+        "newData": {
+          "change": -12,
+          "eloScore": 1103,
+          "activityTypeId": "e1bcf825-7f1f-475f-aaf9-dcd91009e9b6"
+        },
+        "changeDetails": {
+          "newELO": 1103,
+          "eloChange": -12,
+          "activityId": "52e072cd-edef-475d-961a-c640b3f415fa",
+          "previousELO": 1115
+        },
+        "triggeredBy": "dd363cc7-304f-49a6-9280-c39b83d7359e",
+        "changeSource": "system",
+        "createdAt": "2025-08-05T20:46:46.130Z"
+      },
+      {
+        "id": "d67fa92f-9201-445d-8286-c0c250a9d613",
+        "entityType": "activity",
+        "entityId": "52e072cd-edef-475d-961a-c640b3f415fa",
+        "changeType": "update",
+        "affectedUserId": "0a4b247c-b155-42d8-9d28-66b4cd9aaf9d",
+        "relatedEntityId": null,
+        "previousData": {
+          "completionStatus": "scheduled"
+        },
+        "newData": {
+          "results": [
+            {
+              "result": "win",
+              "userId": "dd363cc7-304f-49a6-9280-c39b83d7359e"
+            },
+            {
+              "result": "loss",
+              "userId": "0a4b247c-b155-42d8-9d28-66b4cd9aaf9d"
+            }
+          ],
+          "completedAt": "2025-08-05T20:46:36.264Z",
+          "completedBy": "dd363cc7-304f-49a6-9280-c39b83d7359e",
+          "completionStatus": "completed"
+        },
+        "changeDetails": null,
+        "triggeredBy": "dd363cc7-304f-49a6-9280-c39b83d7359e",
+        "changeSource": "user_action",
+        "createdAt": "2025-08-05T20:46:38.209Z"
+      }
+    ],
+    "newCursors": {
+      "lastELOSync": "2025-08-05T20:46:53.213Z",
+      "lastActivitySync": "2025-08-05T20:46:53.213Z",
+      "lastSkillRatingSync": "2025-08-05T19:52:22.104Z",
+      "lastConnectionSync": "2025-08-05T19:52:22.104Z",
+      "lastMatchmakingSync": "2025-08-05T19:52:22.104Z"
+    },
+    "metadata": {
+      "totalChanges": 3,
+      "changeTypes": {
+        "activity": 2,
+        "elo": 1
+      },
+      "oldestChange": "2025-08-05T20:46:38.209Z",
+      "newestChange": "2025-08-05T20:46:47.193Z"
+    },
+    "recommendedPollInterval": 5000
+  },
+  "metadata": {
+    "timestamp": "2025-08-05T20:46:53.514Z",
+    "userId": "0a4b247c-b155-42d8-9d28-66b4cd9aaf9d",
+    "clientType": "web",
+    "recommendedNextPoll": "2025-08-05T20:46:58.514Z"
+  }
+}

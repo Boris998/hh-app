@@ -1,0 +1,2 @@
+ALTER TABLE "entity_change_log" ALTER COLUMN "entity_id" SET DATA TYPE varchar(255);--> statement-breakpoint
+ALTER TABLE "entity_change_log" ALTER COLUMN "related_entity_id" SET DATA TYPE varchar(255);

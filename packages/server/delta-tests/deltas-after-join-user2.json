@@ -1,0 +1,50 @@
+{
+  "status": "success",
+  "data": {
+    "hasChanges": true,
+    "changes": [
+      {
+        "id": "8336a048-5cae-456c-8db5-f13bf42186bb",
+        "entityType": "activity",
+        "entityId": "52e072cd-edef-475d-961a-c640b3f415fa",
+        "changeType": "update",
+        "affectedUserId": "0a4b247c-b155-42d8-9d28-66b4cd9aaf9d",
+        "relatedEntityId": null,
+        "previousData": {
+          "participantCount": 1
+        },
+        "newData": {
+          "joinedBy": "0a4b247c-b155-42d8-9d28-66b4cd9aaf9d",
+          "newParticipant": "0a4b247c-b155-42d8-9d28-66b4cd9aaf9d",
+          "participantCount": 2
+        },
+        "changeDetails": null,
+        "triggeredBy": "0a4b247c-b155-42d8-9d28-66b4cd9aaf9d",
+        "changeSource": "user_action",
+        "createdAt": "2025-08-05T20:46:28.173Z"
+      }
+    ],
+    "newCursors": {
+      "lastELOSync": "2025-08-05T19:52:22.104Z",
+      "lastActivitySync": "2025-08-05T20:46:34.683Z",
+      "lastSkillRatingSync": "2025-08-05T19:52:22.104Z",
+      "lastConnectionSync": "2025-08-05T19:52:22.104Z",
+      "lastMatchmakingSync": "2025-08-05T19:52:22.104Z"
+    },
+    "metadata": {
+      "totalChanges": 1,
+      "changeTypes": {
+        "activity": 1
+      },
+      "oldestChange": "2025-08-05T20:46:28.173Z",
+      "newestChange": "2025-08-05T20:46:28.173Z"
+    },
+    "recommendedPollInterval": 5000
+  },
+  "metadata": {
+    "timestamp": "2025-08-05T20:46:34.990Z",
+    "userId": "0a4b247c-b155-42d8-9d28-66b4cd9aaf9d",
+    "clientType": "web",
+    "recommendedNextPoll": "2025-08-05T20:46:39.990Z"
+  }
+}

@@ -16,8 +16,12 @@ import {
 } from "../db/schema.js";
 import { authenticateToken } from "../middleware/auth.js";
 import { eloProcessingService } from "../services/elo-processing.service.js";
+import { deltaTrackingService } from "../services/delta-tracking.service.js";
 
-console.log('🧪 ELO Service loaded:', typeof eloProcessingService?.onActivityCompletion);
+console.log(
+  "🧪 ELO Service loaded:",
+  typeof eloProcessingService?.onActivityCompletion
+);
 
 export const activitiesRouter = new Hono();
 
@@ -383,6 +387,25 @@ activitiesRouter.post(
         `✅ Created activity ${newActivity.id} with ELO level ${suggestedELOLevel}`
       );
 
+      console.log("🔍 About to log delta for activity creation...");
+
+      // Delta logging for activity creation
+      console.log("🔍 About to log delta for activity creation...");
+      await deltaTrackingService.logActivityChange(
+        newActivity.id,
+        "create",
+        [user.id],
+        undefined,
+        {
+          activityTypeId: activityData.activityTypeId,
+          description: activityData.description,
+          createdBy: user.id,
+          eloLevel: suggestedELOLevel,
+        },
+        user.id
+      );
+      console.log("✅ Delta logged for activity creation");
+
       return c.json(
         {
           status: "success",
@@ -605,6 +628,21 @@ activitiesRouter.post(
         console.log(
           `🎯 Creating chat room for activity ${activityId} (2nd participant joined)`
         );
+
+        // ADD THIS: Delta logging for activity join
+        await deltaTrackingService.logActivityChange(
+          activityId,
+          "update",
+          [result.activity.creatorId, user.id], // both creator and joiner
+          { participantCount: result.participantCount - 1 },
+          {
+            newParticipant: user.id,
+            participantCount: result.participantCount,
+            joinedBy: user.id,
+          },
+          user.id
+        );
+
         try {
           await autoCreateChatRoom(
             activityId,
@@ -620,6 +658,21 @@ activitiesRouter.post(
         }
       } else if (result.participantCount > 2) {
         // Add participant to existing chat room
+
+        // ADD THIS: Delta logging for additional participants
+        await deltaTrackingService.logActivityChange(
+          activityId,
+          "update",
+          [result.activity.creatorId, user.id],
+          { participantCount: result.participantCount - 1 },
+          {
+            newParticipant: user.id,
+            participantCount: result.participantCount,
+            joinedBy: user.id,
+          },
+          user.id
+        );
+
         console.log(
           `➕ Adding participant ${user.id} to existing chat for activity ${activityId}`
         );

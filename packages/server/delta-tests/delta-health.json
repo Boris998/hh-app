@@ -1,0 +1,14 @@
+{
+  "status": "healthy",
+  "data": {
+    "deltaSystem": {
+      "status": "operational",
+      "responseTime": "1311ms",
+      "timestamp": "2025-08-05T20:46:21.066Z"
+    },
+    "database": {
+      "status": "connected",
+      "responseTime": "1311ms"
+    }
+  }
+}

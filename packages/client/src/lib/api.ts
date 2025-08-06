@@ -1,144 +1,358 @@
-//src/lib/api.ts
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001'
+// src/lib/api.ts
+import { useAuthStore } from '@/stores/auth-store'
 
-export class ApiError extends Error {
-  public status: number;
-  constructor(status: number, message: string) {
-    super(message);
-    this.name = 'ApiError';
-    this.status = status;
+export interface ApiResponse<T = any> {
+  success: boolean
+  data?: T
+  error?: string
+  message?: string
+}
+
+export interface PaginatedResponse<T> {
+  data: T[]
+  pagination: {
+    page: number
+    limit: number
+    total: number
+    pages: number
   }
 }
 
-export async function apiRequest<T>(
-  endpoint: string, 
-  options: RequestInit = {}
-): Promise<T> {
-  const url = `${API_BASE_URL}${endpoint}`
+class ApiClient {
+  private baseURL: string
   
-  const response = await fetch(url, {
-    headers: {
-      'Content-Type': 'application/json',
-      ...options.headers,
-    },
-    credentials: 'include',
-    ...options,
-  })
-
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}))
-    throw new ApiError(response.status, errorData.message || 'Request failed')
+  constructor() {
+    this.baseURL = '/api'
   }
 
-  return response.json()
-}
+  private async request<T>(
+    endpoint: string,
+    options: RequestInit = {}
+  ): Promise<T> {
+    const { token } = useAuthStore.getState()
+    
+    const config: RequestInit = {
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token && { 'Authorization': `Bearer ${token}` }),
+        ...options.headers,
+      },
+      ...options,
+    }
 
-// src/lib/websocket.ts
-import { useEffect, useRef, useCallback } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
+    const response = await fetch(`${this.baseURL}${endpoint}`, config)
+    
+    // Handle auth errors
+    if (response.status === 401) {
+      useAuthStore.getState().logout()
+      throw new Error('Authentication required')
+    }
 
-type WebSocketMessage = {
-  type: string
-  data: any
-  eventId?: string
-}
+    const data = await response.json()
 
-export function useWebSocket(url?: string) {
-  const wsRef = useRef<WebSocket | null>(null)
-  const queryClient = useQueryClient()
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
-  const reconnectAttemptsRef = useRef(0)
-  const maxReconnectAttempts = 5
+    if (!response.ok) {
+      throw new Error(data.message || data.error || 'Request failed')
+    }
 
-  const wsUrl = url || `${import.meta.env.VITE_WS_URL || 'ws://localhost:3001'}/ws`
+    return data
+  }
 
-  const connect = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) return
+  // Auth endpoints
+  auth = {
+    login: (email: string, password: string) =>
+      this.request<{ user: any; token: string }>('/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({ email, password }),
+      }),
 
-    try {
-      wsRef.current = new WebSocket(wsUrl)
+    register: (username: string, email: string, password: string) =>
+      this.request<{ user: any; token: string }>('/auth/register', {
+        method: 'POST',
+        body: JSON.stringify({ username, email, password }),
+      }),
 
-      wsRef.current.onopen = () => {
-        console.log('WebSocket connected')
-        reconnectAttemptsRef.current = 0
-      }
+    refresh: () =>
+      this.request<{ user: any; token: string }>('/auth/refresh', {
+        method: 'POST',
+      }),
 
-      wsRef.current.onmessage = (event) => {
-        try {
-          const message: WebSocketMessage = JSON.parse(event.data)
-          
-          switch (message.type) {
-            case 'EVENT_CREATED':
-            case 'EVENT_UPDATED':
-            case 'EVENT_DELETED':
-              queryClient.invalidateQueries({ queryKey: ['events'] })
-              break
-              
-            case 'CHAT_MESSAGE':
-              if (message.eventId) {
-                queryClient.setQueryData(['chat', message.eventId], (old: any[]) => [
-                  ...(old || []),
-                  message.data
-                ])
-              }
-              break
-              
-            case 'USER_JOINED':
-            case 'USER_LEFT':
-              if (message.eventId) {
-                queryClient.invalidateQueries({ 
-                  queryKey: ['event', message.eventId, 'participants'] 
-                })
-              }
-              break
-              
-            default:
-              console.log('Unhandled WebSocket message:', message)
+    me: () =>
+      this.request<{ user: any }>('/auth/me'),
+  }
+
+  // User endpoints
+  users = {
+    getProfile: (userId: string) =>
+      this.request<any>(`/users/${userId}`),
+
+    updateProfile: (userId: string, data: any) =>
+      this.request<any>(`/users/${userId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      }),
+
+    getQuickStats: (userId: string) =>
+      this.request<{
+        averageELO: number
+        activitiesThisWeek: number
+        totalActivities: number
+        friendsCount: number
+      }>(`/users/${userId}/quick-stats`),
+
+    uploadAvatar: (userId: string, file: File) => {
+      const formData = new FormData()
+      formData.append('avatar', file)
+      
+      return this.request<{ avatarUrl: string }>(`/users/${userId}/avatar`, {
+        method: 'POST',
+        headers: {}, // Let browser set Content-Type for FormData
+        body: formData,
+      })
+    },
+  }
+
+  // Activity endpoints
+  activities = {
+    list: (params?: {
+      page?: number
+      limit?: number
+      activityType?: string
+      location?: string
+      dateFrom?: string
+      dateTo?: string
+      eloRange?: [number, number]
+    }) => {
+      const searchParams = new URLSearchParams()
+      if (params) {
+        Object.entries(params).forEach(([key, value]) => {
+          if (value !== undefined) {
+            if (Array.isArray(value)) {
+              searchParams.append(key, value.join(','))
+            } else {
+              searchParams.append(key, String(value))
+            }
           }
-        } catch (error) {
-          console.error('Failed to parse WebSocket message:', error)
-        }
+        })
       }
+      
+      return this.request<PaginatedResponse<any>>(`/activities?${searchParams}`)
+    },
 
-      wsRef.current.onclose = () => {
-        console.log('WebSocket disconnected')
-        
-        if (reconnectAttemptsRef.current < maxReconnectAttempts) {
-          const timeout = Math.pow(2, reconnectAttemptsRef.current) * 1000
-          reconnectTimeoutRef.current = setTimeout(() => {
-            reconnectAttemptsRef.current++
-            connect()
-          }, timeout)
-        }
-      }
+    getById: (id: string) =>
+      this.request<any>(`/activities/${id}`),
 
-      wsRef.current.onerror = (error) => {
-        console.error('WebSocket error:', error)
-      }
-    } catch (error) {
-      console.error('Failed to create WebSocket connection:', error)
-    }
-  }, [wsUrl, queryClient])
+    create: (data: any) =>
+      this.request<any>('/activities', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
 
-  const disconnect = useCallback(() => {
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current)
-    }
-    wsRef.current?.close()
-  }, [])
+    update: (id: string, data: any) =>
+      this.request<any>(`/activities/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      }),
 
-  const send = useCallback((message: WebSocketMessage) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify(message))
-    } else {
-      console.warn('WebSocket not connected, message not sent:', message)
-    }
-  }, [])
+    delete: (id: string) =>
+      this.request<void>(`/activities/${id}`, {
+        method: 'DELETE',
+      }),
 
-  useEffect(() => {
-    connect()
-    return disconnect
-  }, [connect, disconnect])
+    join: (id: string) =>
+      this.request<any>(`/activities/${id}/join`, {
+        method: 'POST',
+      }),
 
-  return { send, disconnect }
+    leave: (id: string) =>
+      this.request<any>(`/activities/${id}/leave`, {
+        method: 'POST',
+      }),
+
+    complete: (id: string, results: any) =>
+      this.request<any>(`/activities/${id}/complete`, {
+        method: 'POST',
+        body: JSON.stringify(results),
+      }),
+  }
+
+  // Activity Types
+  activityTypes = {
+    list: () =>
+      this.request<any[]>('/activity-types'),
+
+    getById: (id: string) =>
+      this.request<any>(`/activity-types/${id}`),
+  }
+
+  // ELO endpoints
+  elo = {
+    getUserELO: (userId: string, activityTypeId?: string) => {
+      const endpoint = activityTypeId 
+        ? `/elo/${userId}?activityType=${activityTypeId}`
+        : `/elo/${userId}`
+      return this.request<any>(endpoint)
+    },
+
+    getHistory: (userId: string, activityTypeId: string, days = 30) =>
+      this.request<any[]>(`/elo/${userId}/${activityTypeId}/history?days=${days}`),
+
+    getLeaderboard: (activityTypeId: string, page = 1, limit = 50) =>
+      this.request<PaginatedResponse<any>>(`/elo/leaderboard/${activityTypeId}?page=${page}&limit=${limit}`),
+  }
+
+  // Skills endpoints
+  skills = {
+    getUserSkills: (userId: string, activityTypeId?: string) => {
+      const endpoint = activityTypeId
+        ? `/skills/${userId}?activityType=${activityTypeId}`
+        : `/skills/${userId}`
+      return this.request<any>(endpoint)
+    },
+
+    rateSkills: (activityId: string, ratings: any[]) =>
+      this.request<any>(`/activities/${activityId}/rate-skills`, {
+        method: 'POST',
+        body: JSON.stringify({ ratings }),
+      }),
+
+    getSkillDefinitions: () =>
+      this.request<any[]>('/skills/definitions'),
+  }
+
+  // Social endpoints
+  social = {
+    getFriends: (userId: string) =>
+      this.request<any[]>(`/users/${userId}/friends`),
+
+    getFriendRequests: () =>
+      this.request<any[]>('/friends/requests'),
+
+    sendFriendRequest: (userId: string) =>
+      this.request<any>(`/friends/request/${userId}`, {
+        method: 'POST',
+      }),
+
+    acceptFriendRequest: (requestId: string) =>
+      this.request<any>(`/friends/accept/${requestId}`, {
+        method: 'POST',
+      }),
+
+    rejectFriendRequest: (requestId: string) =>
+      this.request<any>(`/friends/reject/${requestId}`, {
+        method: 'POST',
+      }),
+
+    removeFriend: (userId: string) =>
+      this.request<any>(`/friends/remove/${userId}`, {
+        method: 'DELETE',
+      }),
+  }
+
+  // Feed endpoints
+  feed = {
+    getActivityFeed: (page = 1, limit = 20) =>
+      this.request<PaginatedResponse<any>>(`/feed?page=${page}&limit=${limit}`),
+
+    createPost: (activityId: string, data: any) =>
+      this.request<any>('/posts', {
+        method: 'POST',
+        body: JSON.stringify({ activityId, ...data }),
+      }),
+
+    likePost: (postId: string) =>
+      this.request<any>(`/posts/${postId}/like`, {
+        method: 'POST',
+      }),
+
+    addComment: (postId: string, comment: string) =>
+      this.request<any>(`/posts/${postId}/comments`, {
+        method: 'POST',
+        body: JSON.stringify({ comment }),
+      }),
+  }
+
+  // Invitations endpoints
+  invitations = {
+    list: () =>
+      this.request<any[]>('/invitations'),
+
+    send: (activityId: string, userIds: string[]) =>
+      this.request<any>('/invitations', {
+        method: 'POST',
+        body: JSON.stringify({ activityId, userIds }),
+      }),
+
+    respond: (invitationId: string, response: 'accept' | 'decline') =>
+      this.request<any>(`/invitations/${invitationId}/respond`, {
+        method: 'POST',
+        body: JSON.stringify({ response }),
+      }),
+  }
+
+  // Delta polling
+  deltas = {
+    fetch: (since?: string) => {
+      const endpoint = since ? `/deltas?since=${since}` : '/deltas'
+      return this.request<{ deltas: any[]; timestamp: string }>(endpoint)
+    },
+  }
+
+  // Notifications
+  notifications = {
+    list: (page = 1, limit = 20) =>
+      this.request<PaginatedResponse<any>>(`/notifications?page=${page}&limit=${limit}`),
+
+    getCount: () =>
+      this.request<{ count: number }>('/notifications/count'),
+
+    markAsRead: (notificationId: string) =>
+      this.request<any>(`/notifications/${notificationId}/read`, {
+        method: 'POST',
+      }),
+
+    markAllAsRead: () =>
+      this.request<any>('/notifications/read-all', {
+        method: 'POST',
+      }),
+  }
+}
+
+export const api = new ApiClient()
+
+// React Query helper functions
+export const queryKeys = {
+  // Users
+  user: (id: string) => ['users', id] as const,
+  userQuickStats: (id: string) => ['users', id, 'quick-stats'] as const,
+  userFriends: (id: string) => ['users', id, 'friends'] as const,
+
+  // Activities
+  activities: (filters?: any) => ['activities', filters] as const,
+  activity: (id: string) => ['activities', id] as const,
+  activityTypes: () => ['activity-types'] as const,
+
+  // ELO
+  userELO: (userId: string, activityTypeId?: string) => 
+    activityTypeId ? ['elo', userId, activityTypeId] as const : ['elo', userId] as const,
+  eloHistory: (userId: string, activityTypeId: string) => 
+    ['elo', userId, activityTypeId, 'history'] as const,
+  leaderboard: (activityTypeId: string) => 
+    ['leaderboards', activityTypeId] as const,
+
+  // Skills
+  userSkills: (userId: string, activityTypeId?: string) => 
+    activityTypeId ? ['skills', userId, activityTypeId] as const : ['skills', userId] as const,
+  skillDefinitions: () => ['skills', 'definitions'] as const,
+
+  // Social
+  friends: (userId: string) => ['friends', userId] as const,
+  friendRequests: () => ['friends', 'requests'] as const,
+  feed: () => ['feed'] as const,
+
+  // Invitations
+  invitations: () => ['invitations'] as const,
+
+  // Notifications
+  notifications: () => ['notifications'] as const,
+  notificationCount: () => ['notifications', 'count'] as const,
 }

@@ -196,7 +196,7 @@ function Dashboard() {
           <CardContent>
             {eloData.length > 0 ? (
               <div className="space-y-4">
-                {eloData.slice(0, 5).map((elo) => (
+                {eloData.slice(0, 5).map((elo:any) => (
                   <ELOListItem key={elo.activityTypeId} elo={elo} />
                 ))}
                 

@@ -6,7 +6,7 @@ import { useAuthStore } from '@/stores/auth-store'
 import { api, queryKeys } from '@/lib/api'
 import { ProfileHeader } from '../../components/profile/profile-header'
 
-export const Route = createFileRoute('/profile/_layout')({
+export const Route = createFileRoute()({
   component: ProfileLayout,
 })
 

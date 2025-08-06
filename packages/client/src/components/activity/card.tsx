@@ -4,7 +4,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '../ui/button'
 import { format } from 'path'
 
-export function ActivityCard({ activity }: { activity: Activity }) {
+export function ActivityCard({ activity }: { activity: any }) {
   return (
     <div className="rounded-lg border bg-card p-6 shadow-sm transition-all hover:shadow-md">
       <div className="flex items-start justify-between">

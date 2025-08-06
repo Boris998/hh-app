@@ -1,34 +1,38 @@
 // src/stores/auth-store.ts
-import { create } from 'zustand'
-import { persist, createJSONStorage } from 'zustand/middleware'
+import { create } from "zustand";
+import { persist, createJSONStorage } from "zustand/middleware";
 
 export interface User {
-  id: string
-  publicId: string
-  username: string
-  email: string
-  avatarUrl?: string
-  role: string
-  createdAt: string
-  updatedAt: string
+  id: string;
+  publicId: string;
+  username: string;
+  email: string;
+  avatarUrl?: string;
+  role: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface AuthState {
   // State
-  user: User | null
-  token: string | null
-  isAuthenticated: boolean
-  isLoading: boolean
-  error: string | null
-  
+  user: User | null;
+  token: string | null;
+  isAuthenticated: boolean;
+  isLoading: boolean;
+  error: string | null;
+
   // Actions
-  login: (email: string, password: string) => Promise<void>
-  register: (username: string, email: string, password: string) => Promise<void>
-  logout: () => void
-  clearError: () => void
-  setLoading: (loading: boolean) => void
-  refreshToken: () => Promise<void>
-  updateUser: (userData: Partial<User>) => void
+  login: (email: string, password: string) => Promise<void>;
+  register: (
+    username: string,
+    email: string,
+    password: string
+  ) => Promise<void>;
+  logout: () => void;
+  clearError: () => void;
+  setLoading: (loading: boolean) => void;
+  refreshToken: () => Promise<void>;
+  updateUser: (userData: Partial<User>) => void;
 }
 
 export const useAuthStore = create<AuthState>()(
@@ -42,71 +46,119 @@ export const useAuthStore = create<AuthState>()(
       error: null,
 
       // Actions
+      //   login: async (email: string, password: string) => {
+      //     set({ isLoading: true, error: null });
+
+      //     try {
+      //       const response = await fetch("/api/auth/login", {
+      //         method: "POST",
+      //         headers: {
+      //           "Content-Type": "application/json",
+      //         },
+      //         body: JSON.stringify({ email, password }),
+      //       });
+
+      //       const data = await response.json();
+
+      //       if (!response.ok) {
+      //         throw new Error(data.message || "Login failed");
+      //       }
+
+      //       set({
+      //         user: data.user,
+      //         token: data.token,
+      //         isAuthenticated: true,
+      //         isLoading: false,
+      //         error: null,
+      //       });
+      //     } catch (error) {
+      //       set({
+      //         error: error instanceof Error ? error.message : "Login failed",
+      //         isLoading: false,
+      //       });
+      //       throw error;
+      //     }
+      //   },
+      // src/stores/auth-store.ts - Update the login method with debugging
+      // src/stores/auth-store.ts - Fix the login method
       login: async (email: string, password: string) => {
-        set({ isLoading: true, error: null })
-        
+        set({ isLoading: true, error: null });
+
         try {
-          const response = await fetch('/api/auth/login', {
-            method: 'POST',
+          const response = await fetch("/api/auth/login", {
+            method: "POST",
             headers: {
-              'Content-Type': 'application/json',
+              "Content-Type": "application/json",
             },
             body: JSON.stringify({ email, password }),
-          })
+          });
 
-          const data = await response.json()
+          const responseData = await response.json();
 
           if (!response.ok) {
-            throw new Error(data.message || 'Login failed')
+            throw new Error(responseData.message || "Login failed");
+          }
+
+          // Server returns: { status: "success", data: { user: {...}, tokens: {...} } }
+          const { user, tokens } = responseData.data;
+
+          // Check the correct structure
+          if (!user || !tokens?.accessToken) {
+            console.error("Missing data in response:", responseData);
+            throw new Error("Invalid login response");
           }
 
           set({
-            user: data.user,
-            token: data.token,
+            user: user,
+            token: tokens.accessToken,
             isAuthenticated: true,
             isLoading: false,
             error: null,
-          })
+          });
+
+          console.log("✅ Login successful:", user.username);
         } catch (error) {
+          console.error("❌ Login error:", error);
           set({
-            error: error instanceof Error ? error.message : 'Login failed',
+            error: error instanceof Error ? error.message : "Login failed",
             isLoading: false,
-          })
-          throw error
+          });
+          throw error;
         }
       },
 
       register: async (username: string, email: string, password: string) => {
-        set({ isLoading: true, error: null })
-        
+        set({ isLoading: true, error: null });
+
         try {
-          const response = await fetch('/api/auth/register', {
-            method: 'POST',
+          const response = await fetch("/api/auth/register", {
+            method: "POST",
             headers: {
-              'Content-Type': 'application/json',
+              "Content-Type": "application/json",
             },
             body: JSON.stringify({ username, email, password }),
-          })
+          });
 
-          const data = await response.json()
+          const data = await response.json();
 
           if (!response.ok) {
-            throw new Error(data.message || 'Registration failed')
+            throw new Error(data.message || "Registration failed");
           }
 
           set({
-            user: data.user,
-            token: data.token,
+            user: data.data.user,
+            token: data.data.tokens.accessToken,
             isAuthenticated: true,
             isLoading: false,
             error: null,
-          })
+          });
         } catch (error) {
           set({
-            error: error instanceof Error ? error.message : 'Registration failed',
+            error:
+              error instanceof Error ? error.message : "Registration failed",
             isLoading: false,
-          })
-          throw error
+          });
+          throw error;
         }
       },
 
@@ -116,10 +168,10 @@ export const useAuthStore = create<AuthState>()(
           token: null,
           isAuthenticated: false,
           error: null,
-        })
-        
+        });
+
         // Clear any cached data
-        localStorage.removeItem('auth-storage')
+        localStorage.removeItem("auth-storage");
       },
 
       clearError: () => set({ error: null }),
@@ -127,46 +179,46 @@ export const useAuthStore = create<AuthState>()(
       setLoading: (loading: boolean) => set({ isLoading: loading }),
 
       refreshToken: async () => {
-        const { token } = get()
-        if (!token) return
+        const { token } = get();
+        if (!token) return;
 
         try {
-          const response = await fetch('/api/auth/refresh', {
-            method: 'POST',
+          const response = await fetch("/api/auth/refresh", {
+            method: "POST",
             headers: {
-              'Authorization': `Bearer ${token}`,
-              'Content-Type': 'application/json',
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
             },
-          })
+          });
 
           if (response.ok) {
-            const data = await response.json()
+            const data = await response.json();
             set({
-              user: data.user,
-              token: data.token,
+              user: data.data.user,
+              token: data.data.token,
               isAuthenticated: true,
-            })
+            });
           } else {
             // Token refresh failed, logout user
-            get().logout()
+            get().logout();
           }
         } catch (error) {
-          console.error('Token refresh failed:', error)
-          get().logout()
+          console.error("Token refresh failed:", error);
+          get().logout();
         }
       },
 
       updateUser: (userData: Partial<User>) => {
-        const { user } = get()
+        const { user } = get();
         if (user) {
           set({
-            user: { ...user, ...userData }
-          })
+            user: { ...user, ...userData },
+          });
         }
       },
     }),
     {
-      name: 'auth-storage',
+      name: "auth-storage",
       storage: createJSONStorage(() => localStorage),
       partialize: (state) => ({
         user: state.user,
@@ -175,4 +227,4 @@ export const useAuthStore = create<AuthState>()(
       }),
     }
   )
-)
+);

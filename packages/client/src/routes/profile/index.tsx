@@ -30,7 +30,7 @@ function ProfileOverview() {
       const [quickStats, eloData, recentActivities] = await Promise.all([
         api.users.getQuickStats(user.id),
         api.elo.getUserELO(user.id),
-        api.activities.list({ page: 1, limit: 5, creatorId: user.id }),
+        api.activities.list({ page: 1, limit: 5, createdBy: user.id }),
       ])
 
       return {
@@ -162,13 +162,13 @@ function ProfileOverview() {
             <AchievementBadge
               title="First Activity"
               description="Participated in your first activity"
-              achieved={quickStats?.totalActivities > 0}
+              achieved={(quickStats?.totalActivities ?? 0) > 0}
             />
             
             <AchievementBadge
               title="Social Butterfly"
               description="Connected with 5 friends"
-              achieved={quickStats?.friendsCount >= 5}
+              achieved={(quickStats?.friendsCount ?? 0) >= 5}
             />
             
             <AchievementBadge
@@ -180,7 +180,7 @@ function ProfileOverview() {
             <AchievementBadge
               title="ELO Climber"
               description="Reached 1500 ELO in any activity"
-              achieved={eloData.some(elo => elo.eloScore >= 1500)}
+              achieved={eloData.some((elo:any) => elo.eloScore >= 1500)}
             />
           </div>
         </CardContent>

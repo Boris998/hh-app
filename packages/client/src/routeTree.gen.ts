@@ -11,22 +11,44 @@
 import { createFileRoute } from '@tanstack/react-router'
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as SkillRatingsRouteImport } from './routes/skill-ratings'
+import { Route as SettingsRouteImport } from './routes/settings'
+import { Route as NotificationsRouteImport } from './routes/notifications'
 import { Route as LeaderboardsRouteImport } from './routes/leaderboards'
 import { Route as FeedRouteImport } from './routes/feed'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as SkillRatingsIndexRouteImport } from './routes/skill-ratings/index'
 import { Route as ProfileIndexRouteImport } from './routes/profile/index'
 import { Route as ActivitiesIndexRouteImport } from './routes/activities/index'
+import { Route as ProfileFriendsRouteImport } from './routes/profile/friends'
 import { Route as ProfileActivitiesRouteImport } from './routes/profile/activities'
 import { Route as ProfileLayoutRouteImport } from './routes/profile/_layout'
 import { Route as AuthRegisterRouteImport } from './routes/auth/register'
 import { Route as AuthLoginRouteImport } from './routes/auth/login'
 import { Route as ActivitiesCreateRouteImport } from './routes/activities/create'
+import { Route as ActivitiesActivityIdRouteImport } from './routes/activities/$activityId'
+import { Route as SkillRatingsActivityActivityRouteImport } from './routes/skill-ratings/activity.$activity'
 
 const ProfileRouteImport = createFileRoute('/profile')()
 
 const ProfileRoute = ProfileRouteImport.update({
   id: '/profile',
   path: '/profile',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SkillRatingsRoute = SkillRatingsRouteImport.update({
+  id: '/skill-ratings',
+  path: '/skill-ratings',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SettingsRoute = SettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const NotificationsRoute = NotificationsRouteImport.update({
+  id: '/notifications',
+  path: '/notifications',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LeaderboardsRoute = LeaderboardsRouteImport.update({
@@ -44,6 +66,11 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SkillRatingsIndexRoute = SkillRatingsIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => SkillRatingsRoute,
+} as any)
 const ProfileIndexRoute = ProfileIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -53,6 +80,11 @@ const ActivitiesIndexRoute = ActivitiesIndexRouteImport.update({
   id: '/activities/',
   path: '/activities/',
   getParentRoute: () => rootRouteImport,
+} as any)
+const ProfileFriendsRoute = ProfileFriendsRouteImport.update({
+  id: '/friends',
+  path: '/friends',
+  getParentRoute: () => ProfileRoute,
 } as any)
 const ProfileActivitiesRoute = ProfileActivitiesRouteImport.update({
   id: '/activities',
@@ -78,43 +110,74 @@ const ActivitiesCreateRoute = ActivitiesCreateRouteImport.update({
   path: '/activities/create',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ActivitiesActivityIdRoute = ActivitiesActivityIdRouteImport.update({
+  id: '/activities/$activityId',
+  path: '/activities/$activityId',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SkillRatingsActivityActivityRoute =
+  SkillRatingsActivityActivityRouteImport.update({
+    id: '/activity/$activity',
+    path: '/activity/$activity',
+    getParentRoute: () => SkillRatingsRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/feed': typeof FeedRoute
   '/leaderboards': typeof LeaderboardsRoute
+  '/notifications': typeof NotificationsRoute
+  '/settings': typeof SettingsRoute
+  '/skill-ratings': typeof SkillRatingsRouteWithChildren
+  '/activities/$activityId': typeof ActivitiesActivityIdRoute
   '/activities/create': typeof ActivitiesCreateRoute
   '/auth/login': typeof AuthLoginRoute
   '/auth/register': typeof AuthRegisterRoute
   '/profile': typeof ProfileLayoutRoute
   '/profile/activities': typeof ProfileActivitiesRoute
+  '/profile/friends': typeof ProfileFriendsRoute
   '/activities': typeof ActivitiesIndexRoute
   '/profile/': typeof ProfileIndexRoute
+  '/skill-ratings/': typeof SkillRatingsIndexRoute
+  '/skill-ratings/activity/$activity': typeof SkillRatingsActivityActivityRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/feed': typeof FeedRoute
   '/leaderboards': typeof LeaderboardsRoute
+  '/notifications': typeof NotificationsRoute
+  '/settings': typeof SettingsRoute
+  '/activities/$activityId': typeof ActivitiesActivityIdRoute
   '/activities/create': typeof ActivitiesCreateRoute
   '/auth/login': typeof AuthLoginRoute
   '/auth/register': typeof AuthRegisterRoute
   '/profile': typeof ProfileIndexRoute
   '/profile/activities': typeof ProfileActivitiesRoute
+  '/profile/friends': typeof ProfileFriendsRoute
   '/activities': typeof ActivitiesIndexRoute
+  '/skill-ratings': typeof SkillRatingsIndexRoute
+  '/skill-ratings/activity/$activity': typeof SkillRatingsActivityActivityRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/feed': typeof FeedRoute
   '/leaderboards': typeof LeaderboardsRoute
+  '/notifications': typeof NotificationsRoute
+  '/settings': typeof SettingsRoute
+  '/skill-ratings': typeof SkillRatingsRouteWithChildren
+  '/activities/$activityId': typeof ActivitiesActivityIdRoute
   '/activities/create': typeof ActivitiesCreateRoute
   '/auth/login': typeof AuthLoginRoute
   '/auth/register': typeof AuthRegisterRoute
   '/profile': typeof ProfileRouteWithChildren
   '/profile/_layout': typeof ProfileLayoutRoute
   '/profile/activities': typeof ProfileActivitiesRoute
+  '/profile/friends': typeof ProfileFriendsRoute
   '/activities/': typeof ActivitiesIndexRoute
   '/profile/': typeof ProfileIndexRoute
+  '/skill-ratings/': typeof SkillRatingsIndexRoute
+  '/skill-ratings/activity/$activity': typeof SkillRatingsActivityActivityRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -122,43 +185,67 @@ export interface FileRouteTypes {
     | '/'
     | '/feed'
     | '/leaderboards'
+    | '/notifications'
+    | '/settings'
+    | '/skill-ratings'
+    | '/activities/$activityId'
     | '/activities/create'
     | '/auth/login'
     | '/auth/register'
     | '/profile'
     | '/profile/activities'
+    | '/profile/friends'
     | '/activities'
     | '/profile/'
+    | '/skill-ratings/'
+    | '/skill-ratings/activity/$activity'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/feed'
     | '/leaderboards'
+    | '/notifications'
+    | '/settings'
+    | '/activities/$activityId'
     | '/activities/create'
     | '/auth/login'
     | '/auth/register'
     | '/profile'
     | '/profile/activities'
+    | '/profile/friends'
     | '/activities'
+    | '/skill-ratings'
+    | '/skill-ratings/activity/$activity'
   id:
     | '__root__'
     | '/'
     | '/feed'
     | '/leaderboards'
+    | '/notifications'
+    | '/settings'
+    | '/skill-ratings'
+    | '/activities/$activityId'
     | '/activities/create'
     | '/auth/login'
     | '/auth/register'
     | '/profile'
     | '/profile/_layout'
     | '/profile/activities'
+    | '/profile/friends'
     | '/activities/'
     | '/profile/'
+    | '/skill-ratings/'
+    | '/skill-ratings/activity/$activity'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   FeedRoute: typeof FeedRoute
   LeaderboardsRoute: typeof LeaderboardsRoute
+  NotificationsRoute: typeof NotificationsRoute
+  SettingsRoute: typeof SettingsRoute
+  SkillRatingsRoute: typeof SkillRatingsRouteWithChildren
+  ActivitiesActivityIdRoute: typeof ActivitiesActivityIdRoute
   ActivitiesCreateRoute: typeof ActivitiesCreateRoute
   AuthLoginRoute: typeof AuthLoginRoute
   AuthRegisterRoute: typeof AuthRegisterRoute
@@ -173,6 +260,27 @@ declare module '@tanstack/react-router' {
       path: '/profile'
       fullPath: '/profile'
       preLoaderRoute: typeof ProfileRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/skill-ratings': {
+      id: '/skill-ratings'
+      path: '/skill-ratings'
+      fullPath: '/skill-ratings'
+      preLoaderRoute: typeof SkillRatingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/settings': {
+      id: '/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof SettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/notifications': {
+      id: '/notifications'
+      path: '/notifications'
+      fullPath: '/notifications'
+      preLoaderRoute: typeof NotificationsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/leaderboards': {
@@ -196,6 +304,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/skill-ratings/': {
+      id: '/skill-ratings/'
+      path: '/'
+      fullPath: '/skill-ratings/'
+      preLoaderRoute: typeof SkillRatingsIndexRouteImport
+      parentRoute: typeof SkillRatingsRoute
+    }
     '/profile/': {
       id: '/profile/'
       path: '/'
@@ -209,6 +324,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/activities'
       preLoaderRoute: typeof ActivitiesIndexRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/profile/friends': {
+      id: '/profile/friends'
+      path: '/friends'
+      fullPath: '/profile/friends'
+      preLoaderRoute: typeof ProfileFriendsRouteImport
+      parentRoute: typeof ProfileRoute
     }
     '/profile/activities': {
       id: '/profile/activities'
@@ -245,18 +367,48 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ActivitiesCreateRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/activities/$activityId': {
+      id: '/activities/$activityId'
+      path: '/activities/$activityId'
+      fullPath: '/activities/$activityId'
+      preLoaderRoute: typeof ActivitiesActivityIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/skill-ratings/activity/$activity': {
+      id: '/skill-ratings/activity/$activity'
+      path: '/activity/$activity'
+      fullPath: '/skill-ratings/activity/$activity'
+      preLoaderRoute: typeof SkillRatingsActivityActivityRouteImport
+      parentRoute: typeof SkillRatingsRoute
+    }
   }
 }
+
+interface SkillRatingsRouteChildren {
+  SkillRatingsIndexRoute: typeof SkillRatingsIndexRoute
+  SkillRatingsActivityActivityRoute: typeof SkillRatingsActivityActivityRoute
+}
+
+const SkillRatingsRouteChildren: SkillRatingsRouteChildren = {
+  SkillRatingsIndexRoute: SkillRatingsIndexRoute,
+  SkillRatingsActivityActivityRoute: SkillRatingsActivityActivityRoute,
+}
+
+const SkillRatingsRouteWithChildren = SkillRatingsRoute._addFileChildren(
+  SkillRatingsRouteChildren,
+)
 
 interface ProfileRouteChildren {
   ProfileLayoutRoute: typeof ProfileLayoutRoute
   ProfileActivitiesRoute: typeof ProfileActivitiesRoute
+  ProfileFriendsRoute: typeof ProfileFriendsRoute
   ProfileIndexRoute: typeof ProfileIndexRoute
 }
 
 const ProfileRouteChildren: ProfileRouteChildren = {
   ProfileLayoutRoute: ProfileLayoutRoute,
   ProfileActivitiesRoute: ProfileActivitiesRoute,
+  ProfileFriendsRoute: ProfileFriendsRoute,
   ProfileIndexRoute: ProfileIndexRoute,
 }
 
@@ -267,6 +419,10 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   FeedRoute: FeedRoute,
   LeaderboardsRoute: LeaderboardsRoute,
+  NotificationsRoute: NotificationsRoute,
+  SettingsRoute: SettingsRoute,
+  SkillRatingsRoute: SkillRatingsRouteWithChildren,
+  ActivitiesActivityIdRoute: ActivitiesActivityIdRoute,
   ActivitiesCreateRoute: ActivitiesCreateRoute,
   AuthLoginRoute: AuthLoginRoute,
   AuthRegisterRoute: AuthRegisterRoute,

@@ -5,7 +5,6 @@ import {
   Trophy,
   Activity,
   Users,
-  TrendingUp,
   Calendar,
   Target
 } from 'lucide-react'
@@ -35,8 +34,8 @@ function ProfileOverview() {
 
       return {
         quickStats,
-        eloData,
-        recentActivities: recentActivities.data,
+        eloData: eloData.data,
+        recentActivities: recentActivities.data?.activities || [],
       }
     },
     enabled: !!user?.id,
@@ -58,28 +57,28 @@ function ProfileOverview() {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         <StatCard
           title="Total Activities"
-          value={quickStats?.totalActivities || 0}
+          value={quickStats?.data.totalActivities || 0}
           icon={Activity}
           description="All time participation"
         />
         
         <StatCard
           title="Average ELO"
-          value={quickStats?.averageELO ? quickStats.averageELO.toFixed(0) : '--'}
+          value={quickStats?.data.averageELO ? quickStats.data.averageELO.toFixed(0) : '--'}
           icon={Trophy}
           description="Across all activities"
         />
         
         <StatCard
           title="Friends"
-          value={quickStats?.friendsCount || 0}
+          value={quickStats?.data.friendsCount || 0}
           icon={Users}
           description="Connected athletes"
         />
         
         <StatCard
           title="This Week"
-          value={quickStats?.activitiesThisWeek || 0}
+          value={quickStats?.data.activitiesThisWeek || 0}
           icon={Calendar}
           description="Activities participated"
         />
@@ -162,13 +161,13 @@ function ProfileOverview() {
             <AchievementBadge
               title="First Activity"
               description="Participated in your first activity"
-              achieved={(quickStats?.totalActivities ?? 0) > 0}
+              achieved={(quickStats?.data.totalActivities ?? 0) > 0}
             />
             
             <AchievementBadge
               title="Social Butterfly"
               description="Connected with 5 friends"
-              achieved={(quickStats?.friendsCount ?? 0) >= 5}
+              achieved={(quickStats?.data.friendsCount ?? 0) >= 5}
             />
             
             <AchievementBadge

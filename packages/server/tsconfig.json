@@ -15,5 +15,5 @@
     "verbatimModuleSyntax": true,
     "types": ["node"]
   },
-  "include": ["src", "../client/src/lib/poll.ts",".eslintrc.cjs", "**/*.ts", "**/*.cjs", "**/*.js"]
+  "include": ["src", "../client/src/lib/poll.ts",".eslintrc.cjs", "**/*.ts", "**/*.cjs", "**/*.js", "test/services/elo-calculation.test.ts"]
 } 

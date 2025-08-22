@@ -1,70 +1,76 @@
-// src/db/delta-tracking.schema.ts - Delta polling database schema
-
+// src/db/delta-tracking.schema.ts - Fixed schema with new pgTable syntax and zod validation
 import {
-  index,
+  pgTable,
+  varchar,
+  timestamp,
   integer,
   jsonb,
-  pgTable,
-  timestamp,
   uuid,
-  varchar,
+  index,
 } from "drizzle-orm/pg-core";
 import { users } from "./schema";
+import { z } from "zod";
+import { sql } from "drizzle-orm";
 
-// Entity change tracking table
+// Entity change log table with new pgTable syntax
 export const entityChangeLog = pgTable(
   "entity_change_log",
   {
     id: uuid("id").defaultRandom().primaryKey(),
+    entityType: varchar("entity_type", { length: 50 }).notNull(),
+    entityId: varchar("entity_id", { length: 255 }).notNull(),
+    changeType: varchar("change_type", { length: 20 }).notNull(),
 
-    // What changed
-    entityType: varchar("entity_type", { length: 50 }).notNull(), // 'elo', 'activity', 'skill_rating', 'connection'
-    entityId: varchar("entity_id", {length: 255}).notNull(), // ID of the changed entity
-    changeType: varchar("change_type", { length: 20 }).notNull(), // 'create', 'update', 'delete'
+    // User who was affected by this change (for filtering user-specific deltas)
+    affectedUserId: uuid("affected_user_id")
+      .references(() => users.id)
+      .default(sql`null`),
 
-    // Who is affected (for filtering)
-    affectedUserId: uuid("affected_user_id").references(() => users.id),
-    relatedEntityId: varchar("related_entity_id", { length: 255 }), // e.g., activityId for ELO changes
+    // Related entity (e.g., activity for ELO changes)
+    relatedEntityId: varchar("related_entity_id", { length: 255 }).default(
+      sql`null`
+    ),
 
-    // Change details
-    previousData: jsonb("previous_data"), // Old values (for updates)
-    newData: jsonb("new_data").notNull(), // New values
-    changeDetails: jsonb("change_details"), // Additional context
+    // Data before change (for updates/deletes)
+    previousData: jsonb("previous_data").default(null),
 
-    // Metadata
-    triggeredBy: uuid("triggered_by").references(() => users.id), // Who caused the change
-    changeSource: varchar("change_source", { length: 50 }).default("system"), // 'user_action', 'system', 'admin'
+    // Data after change (for creates/updates)
+    newData: jsonb("new_data").notNull(),
+
+    // Additional metadata about the change
+    changeDetails: jsonb("change_details").default(null),
+
+    // Who triggered the change
+    triggeredBy: uuid("triggered_by")
+      .references(() => users.id)
+      .default(sql`null`),
+
+    // Source of the change (system, user_action, etc.)
+    changeSource: varchar("change_source", { length: 50 }).default("system"),
 
     // Timestamps
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
-  (table) => ({
-    // Indexes for efficient delta queries
-    userTimestampIdx: index("entity_change_user_timestamp_idx").on(
-      table.affectedUserId,
-      table.createdAt
-    ),
-    entityTypeTimestampIdx: index("entity_change_type_timestamp_idx").on(
-      table.entityType,
-      table.createdAt
-    ),
-    relatedEntityIdx: index("entity_change_related_idx").on(
-      table.relatedEntityId,
-      table.createdAt
-    ),
-  })
+  (table) => [
+    // New array syntax for indexes
+    index("entity_change_log_affected_user_idx").on(table.affectedUserId),
+    index("entity_change_log_entity_type_idx").on(table.entityType),
+    index("entity_change_log_created_at_idx").on(table.createdAt),
+    index("entity_change_log_entity_idx").on(table.entityType, table.entityId),
+  ]
 );
 
-// User-specific delta cursors (tracks last seen timestamp per user)
+// User delta cursors table with new pgTable syntax
 export const userDeltaCursors = pgTable(
   "user_delta_cursors",
   {
     id: uuid("id").defaultRandom().primaryKey(),
     userId: uuid("user_id")
       .references(() => users.id)
-      .notNull(),
+      .notNull()
+      .unique(),
 
-    // Entity-specific cursors
+    // Entity-specific sync cursors
     lastELOSync: timestamp("last_elo_sync").defaultNow(),
     lastActivitySync: timestamp("last_activity_sync").defaultNow(),
     lastSkillRatingSync: timestamp("last_skill_rating_sync").defaultNow(),
@@ -72,20 +78,20 @@ export const userDeltaCursors = pgTable(
     lastMatchmakingSync: timestamp("last_matchmaking_sync").defaultNow(),
 
     // Client info for adaptive polling
-    clientType: varchar("client_type", { length: 20 }).default("web"), // 'web', 'mobile'
     lastActiveAt: timestamp("last_active_at").defaultNow(),
-    preferredPollInterval: integer("preferred_poll_interval").default(5000), // ms
+    clientType: varchar("client_type", { length: 20 }).default("web"),
 
     // Timestamps
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },
-  (table) => ({
-    userIdx: index("user_delta_cursor_idx").on(table.userId),
-  })
+  (table) => [
+    // New array syntax for indexes
+    index("user_delta_cursor_idx").on(table.userId),
+  ]
 );
 
-// Aggregated delta summaries (for performance)
+// Aggregated delta summaries table with new pgTable syntax
 export const deltaSummaries = pgTable(
   "delta_summaries",
   {
@@ -109,50 +115,194 @@ export const deltaSummaries = pgTable(
     // Timestamps
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
-  (table) => ({
-    userDateIdx: index("delta_summary_user_date_idx").on(
-      table.userId,
-      table.summaryDate
-    ),
-  })
+  (table) => [
+    // New array syntax for indexes
+    index("delta_summary_user_date_idx").on(table.userId, table.summaryDate),
+  ]
 );
 
-// Types for delta responses
-export interface DeltaChange {
-  id: string;
-  entityType:
-    | "elo"
-    | "activity"
-    | "skill_rating"
-    | "connection"
-    | "matchmaking";
-  entityId: string;
-  changeType: "create" | "update" | "delete";
-  affectedUserId?: string;
-  relatedEntityId?: string;
-  previousData?: any;
-  newData: any;
-  changeDetails?: any;
-  triggeredBy?: string;
-  changeSource: string;
-  createdAt: Date;
-}
+// ====================================
+// ZOD VALIDATION SCHEMAS
+// ====================================
 
-export interface UserDeltaResponse {
-  hasChanges: boolean;
-  changes: DeltaChange[];
-  newCursors: {
-    lastELOSync: Date;
-    lastActivitySync: Date;
-    lastSkillRatingSync: Date;
-    lastConnectionSync: Date;
-    lastMatchmakingSync: Date;
-  };
-  metadata: {
-    totalChanges: number;
-    changeTypes: Record<string, number>;
-    oldestChange?: Date;
-    newestChange?: Date;
-  };
-  recommendedPollInterval: number; // Adaptive polling
-}
+// Entity Change Log schemas
+export const insertEntityChangeLogSchema = z.object({
+  id: z.string().uuid().optional(),
+  entityType: z.enum([
+    "elo",
+    "activity",
+    "skill_rating",
+    "connection",
+    "matchmaking",
+    "chat_room",
+    "activity_chat_message",
+  ]),
+  entityId: z.string().min(1, "Entity ID is required"),
+  changeType: z.enum(["create", "update", "delete"]),
+  affectedUserId: z.string().uuid().optional().nullable(),
+  relatedEntityId: z.string().optional().nullable(),
+  previousData: z.any().optional().nullable(),
+  newData: z.any(),
+  changeDetails: z.any().optional().nullable(),
+  triggeredBy: z.string().uuid().optional().nullable(),
+  changeSource: z.string().max(50).default("user_action").optional(), // Make optional with default
+  createdAt: z.date().optional(),
+});
+
+export const selectEntityChangeLogSchema = z.object({
+  id: z.string().uuid(),
+  entityType: z.string(),
+  entityId: z.string(),
+  changeType: z.string(),
+  affectedUserId: z.string().uuid().nullable(),
+  relatedEntityId: z.string().nullable(),
+  previousData: z.any().nullable(),
+  newData: z.any(),
+  changeDetails: z.any().nullable(),
+  triggeredBy: z.string().uuid().nullable(),
+  changeSource: z.string(),
+  createdAt: z.date(),
+});
+
+export const updateEntityChangeLogSchema =
+  insertEntityChangeLogSchema.partial();
+
+// User Delta Cursors schemas
+export const insertUserDeltaCursorSchema = z.object({
+  id: z.string().uuid().optional(),
+  userId: z.string().uuid(),
+  lastELOSync: z.date().optional(),
+  lastActivitySync: z.date().optional(),
+  lastSkillRatingSync: z.date().optional(),
+  lastConnectionSync: z.date().optional(),
+  lastMatchmakingSync: z.date().optional(),
+  lastActiveAt: z.date().optional(),
+  clientType: z.enum(["web", "mobile"]).default("web"),
+  createdAt: z.date().optional(),
+  updatedAt: z.date().optional(),
+});
+
+export const selectUserDeltaCursorSchema = z.object({
+  id: z.string().uuid(),
+  userId: z.string().uuid(),
+  lastELOSync: z.date().nullable(),
+  lastActivitySync: z.date().nullable(),
+  lastSkillRatingSync: z.date().nullable(),
+  lastConnectionSync: z.date().nullable(),
+  lastMatchmakingSync: z.date().nullable(),
+  lastActiveAt: z.date().nullable(),
+  clientType: z.string(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export const updateUserDeltaCursorSchema =
+  insertUserDeltaCursorSchema.partial();
+
+// Delta Summaries schemas
+export const insertDeltaSummarySchema = z.object({
+  id: z.string().uuid().optional(),
+  userId: z.string().uuid(),
+  summaryDate: z.date(),
+  eloChanges: z.number().int().default(0),
+  activityChanges: z.number().int().default(0),
+  skillRatingChanges: z.number().int().default(0),
+  connectionChanges: z.number().int().default(0),
+  summaryData: z.record(z.string(), z.any()).default({}),
+  createdAt: z.date().optional(),
+});
+
+export const selectDeltaSummarySchema = z.object({
+  id: z.string().uuid(),
+  userId: z.string().uuid(),
+  summaryDate: z.date(),
+  eloChanges: z.number().int(),
+  activityChanges: z.number().int(),
+  skillRatingChanges: z.number().int(),
+  connectionChanges: z.number().int(),
+  summaryData: z.record(z.string(), z.any()),
+  createdAt: z.date(),
+});
+
+export const updateDeltaSummarySchema = insertDeltaSummarySchema.partial();
+
+// Delta Query schemas
+export const deltaQuerySchema = z.object({
+  since: z.date().optional(),
+  entityTypes: z
+    .array(
+      z.enum(["elo", "activity", "skill_rating", "connection", "matchmaking"])
+    )
+    .optional(),
+  clientType: z.enum(["web", "mobile"]).default("web"),
+  limit: z.number().int().min(1).max(100).default(50),
+});
+
+// Delta Change Input schema (for service methods)
+export const deltaChangeInputSchema = z.object({
+  entityType: z.enum([
+    "elo",
+    "activity",
+    "skill_rating",
+    "connection",
+    "matchmaking",
+    "user",
+    "activity_chat_message",
+    "team_member",
+    'team',
+    'test'
+  ]),
+  entityId: z.string().min(1, "Entity ID is required"),
+  changeType: z.enum(["create", "update", "delete"]),
+  affectedUserId: z.string().uuid().optional(),
+  relatedEntityId: z.string().optional(),
+  previousData: z.any().optional(),
+  newData: z.any(),
+  changeDetails: z.any().optional(),
+  triggeredBy: z.string().uuid().optional(),
+  changeSource: z.string().max(50).default("user_action").optional(), // Make optional with default
+});
+
+// User Delta Response schema
+export const userDeltaResponseSchema = z.object({
+  hasChanges: z.boolean(),
+  changes: z.array(selectEntityChangeLogSchema),
+  newCursors: z.object({
+    lastELOSync: z.date(),
+    lastActivitySync: z.date(),
+    lastSkillRatingSync: z.date(),
+    lastConnectionSync: z.date(),
+    lastMatchmakingSync: z.date(),
+  }),
+  metadata: z.object({
+    totalChanges: z.number().int(),
+    changeTypes: z.record(z.string(), z.number().int()),
+    oldestChange: z.date().optional(),
+    newestChange: z.date().optional(),
+  }),
+  recommendedPollInterval: z.number().int(),
+});
+
+// ====================================
+// TYPE EXPORTS
+// ====================================
+
+// Entity Change Log types
+export type EntityChangeLog = z.infer<typeof selectEntityChangeLogSchema>;
+export type InsertEntityChangeLog = z.infer<typeof insertEntityChangeLogSchema>;
+export type UpdateEntityChangeLog = z.infer<typeof updateEntityChangeLogSchema>;
+
+// User Delta Cursor types
+export type UserDeltaCursor = z.infer<typeof selectUserDeltaCursorSchema>;
+export type InsertUserDeltaCursor = z.infer<typeof insertUserDeltaCursorSchema>;
+export type UpdateUserDeltaCursor = z.infer<typeof updateUserDeltaCursorSchema>;
+
+// Delta Summary types
+export type DeltaSummary = z.infer<typeof selectDeltaSummarySchema>;
+export type InsertDeltaSummary = z.infer<typeof insertDeltaSummarySchema>;
+export type UpdateDeltaSummary = z.infer<typeof updateDeltaSummarySchema>;
+
+// Query and Response types
+export type DeltaQuery = z.infer<typeof deltaQuerySchema>;
+export type DeltaChangeInput = z.infer<typeof deltaChangeInputSchema>;
+export type UserDeltaResponse = z.infer<typeof userDeltaResponseSchema>;

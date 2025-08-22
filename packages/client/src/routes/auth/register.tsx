@@ -1,83 +1,95 @@
 // src/routes/auth/register.tsx
-import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
-import { useState } from 'react'
-import { Trophy, Loader2 } from 'lucide-react'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { useAuthStore } from '@/stores/auth-store'
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { useState } from "react";
+import { Trophy, Loader2 } from "lucide-react";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { useAuthStore } from "@/stores/auth-store";
 
-export const Route = createFileRoute('/auth/register')({
+export const Route = createFileRoute("/auth/register")({
   component: RegisterPage,
-})
+});
 
 function RegisterPage() {
-  const navigate = useNavigate()
-  const { register, isLoading, error, clearError } = useAuthStore()
-  
-  const [formData, setFormData] = useState({
-    username: '',
-    email: '',
-    password: '',
-    confirmPassword: '',
-  })
+  const navigate = useNavigate();
+  const { register, isLoading, error, clearError } = useAuthStore();
 
-  const [validationErrors, setValidationErrors] = useState<Record<string, string>>({})
+  const [formData, setFormData] = useState({
+    username: "",
+    email: "",
+    password: "",
+    confirmPassword: "",
+  });
+
+  const [validationErrors, setValidationErrors] = useState<
+    Record<string, string>
+  >({});
 
   const validateForm = () => {
-    const errors: Record<string, string> = {}
+    const errors: Record<string, string> = {};
 
     if (formData.username.length < 3) {
-      errors.username = 'Username must be at least 3 characters'
+      errors.username = "Username must be at least 3 characters";
     }
 
     if (!/\S+@\S+\.\S+/.test(formData.email)) {
-      errors.email = 'Please enter a valid email address'
+      errors.email = "Please enter a valid email address";
     }
 
     if (formData.password.length < 6) {
-      errors.password = 'Password must be at least 6 characters'
+      errors.password = "Password must be at least 6 characters";
     }
 
     if (formData.password !== formData.confirmPassword) {
-      errors.confirmPassword = 'Passwords do not match'
+      errors.confirmPassword = "Passwords do not match";
     }
 
-    setValidationErrors(errors)
-    return Object.keys(errors).length === 0
-  }
+    setValidationErrors(errors);
+    return Object.keys(errors).length === 0;
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    clearError()
-    
+    e.preventDefault();
+    clearError();
+
     if (!validateForm()) {
-      return
+      return;
     }
 
     try {
-      await register(formData.username, formData.email, formData.password)
-      navigate({ to: '/' })
+      await register({
+        username: formData.username,
+        email: formData.email,
+        password: formData.password,
+      });
+      navigate({ to: "/" });
     } catch (error) {
       // Error is handled by the store
     }
-  }
+  };
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const { name, value } = e.target
-    setFormData(prev => ({
+    const { name, value } = e.target;
+    setFormData((prev) => ({
       ...prev,
-      [name]: value
-    }))
+      [name]: value,
+    }));
 
     // Clear validation error for this field
     if (validationErrors[name]) {
-      setValidationErrors(prev => ({
+      setValidationErrors((prev) => ({
         ...prev,
-        [name]: ''
-      }))
+        [name]: "",
+      }));
     }
-  }
+  };
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
@@ -103,7 +115,7 @@ function RegisterPage() {
               Enter your details to create your SportSync account
             </CardDescription>
           </CardHeader>
-          
+
           <CardContent>
             <form onSubmit={handleSubmit} className="space-y-4">
               {error && (
@@ -113,7 +125,10 @@ function RegisterPage() {
               )}
 
               <div className="space-y-2">
-                <label htmlFor="username" className="text-sm font-medium text-gray-700">
+                <label
+                  htmlFor="username"
+                  className="text-sm font-medium text-gray-700"
+                >
                   Username
                 </label>
                 <Input
@@ -128,12 +143,17 @@ function RegisterPage() {
                   disabled={isLoading}
                 />
                 {validationErrors.username && (
-                  <p className="text-xs text-red-600">{validationErrors.username}</p>
+                  <p className="text-xs text-red-600">
+                    {validationErrors.username}
+                  </p>
                 )}
               </div>
 
               <div className="space-y-2">
-                <label htmlFor="email" className="text-sm font-medium text-gray-700">
+                <label
+                  htmlFor="email"
+                  className="text-sm font-medium text-gray-700"
+                >
                   Email address
                 </label>
                 <Input
@@ -148,12 +168,17 @@ function RegisterPage() {
                   disabled={isLoading}
                 />
                 {validationErrors.email && (
-                  <p className="text-xs text-red-600">{validationErrors.email}</p>
+                  <p className="text-xs text-red-600">
+                    {validationErrors.email}
+                  </p>
                 )}
               </div>
 
               <div className="space-y-2">
-                <label htmlFor="password" className="text-sm font-medium text-gray-700">
+                <label
+                  htmlFor="password"
+                  className="text-sm font-medium text-gray-700"
+                >
                   Password
                 </label>
                 <Input
@@ -168,12 +193,17 @@ function RegisterPage() {
                   disabled={isLoading}
                 />
                 {validationErrors.password && (
-                  <p className="text-xs text-red-600">{validationErrors.password}</p>
+                  <p className="text-xs text-red-600">
+                    {validationErrors.password}
+                  </p>
                 )}
               </div>
 
               <div className="space-y-2">
-                <label htmlFor="confirmPassword" className="text-sm font-medium text-gray-700">
+                <label
+                  htmlFor="confirmPassword"
+                  className="text-sm font-medium text-gray-700"
+                >
                   Confirm Password
                 </label>
                 <Input
@@ -188,29 +218,27 @@ function RegisterPage() {
                   disabled={isLoading}
                 />
                 {validationErrors.confirmPassword && (
-                  <p className="text-xs text-red-600">{validationErrors.confirmPassword}</p>
+                  <p className="text-xs text-red-600">
+                    {validationErrors.confirmPassword}
+                  </p>
                 )}
               </div>
 
-              <Button
-                type="submit"
-                className="w-full"
-                disabled={isLoading}
-              >
+              <Button type="submit" className="w-full" disabled={isLoading}>
                 {isLoading ? (
                   <>
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                     Creating account...
                   </>
                 ) : (
-                  'Create account'
+                  "Create account"
                 )}
               </Button>
             </form>
 
             <div className="mt-6 text-center">
               <p className="text-sm text-gray-600">
-                Already have an account?{' '}
+                Already have an account?{" "}
                 <Link
                   to="/auth/login"
                   className="font-medium text-blue-600 hover:text-blue-500"
@@ -223,5 +251,5 @@ function RegisterPage() {
         </Card>
       </div>
     </div>
-  )
+  );
 }

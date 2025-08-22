@@ -58,7 +58,7 @@ class EndpointTester {
       body: {
         username: `testuser_${Date.now()}`,
         email: `test_${Date.now()}@example.com`,
-        password: 'password123'
+        password: '1_Pass@hH-app'
       },
       expectedStatus: 201,
       description: 'User Registration'
@@ -70,7 +70,7 @@ class EndpointTester {
       method: 'POST', 
       body: {
         email: 'john.doe@example.com', // Assuming this exists from seed data
-        password: 'password123'
+        password: '1_Pass@hH-app'
       },
       expectedStatus: 200,
       description: 'User Login'
@@ -87,7 +87,7 @@ class EndpointTester {
       method: 'POST',
       body: {
         email: 'jane.smith@example.com', // Assuming this exists
-        password: 'password123'
+        password: '1_Pass@hH-app'
       },
       expectedStatus: 200,
       description: 'Second User Login'
@@ -395,7 +395,7 @@ class EndpointTester {
       method: 'POST',
       body: {
         email: 'admin@example.com', // Assuming admin user exists
-        password: 'password123'
+        password: '1_Pass@hH-app'
       },
       expectedStatus: [200, 401], // 401 is OK if admin doesn't exist
       description: 'Admin Login'

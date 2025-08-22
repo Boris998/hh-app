@@ -1,339 +1,931 @@
-// packages/server/src/routes/messaging.router.ts
-import { Hono } from 'hono';
-import { eq, and, desc } from 'drizzle-orm';
-import { chatRooms, roomMembers, messages, users } from '../db/schema.js';
+// src/routes/messaging.router.ts - Complete implementation with service integration
 
-import { validateRequest } from '../middleware/validate-request.js';
-import { authenticateToken } from '../middleware/auth.js';
-import type { User } from '../middleware/auth.js';
+import { zValidator } from '@hono/zod-validator';
+import { and, asc, count, desc, eq, sql } from 'drizzle-orm';
+import { Hono } from 'hono';
+import { z } from 'zod';
 import { db } from '../db/client.js';
-import { insertChatRoomSchema, insertMessageSchema, updateChatRoomSchema, type CreateChatRoomRequest, type CreateMessageRequest, type UpdateChatRoomRequest } from '../db/messaging-schema.js';
+import {
+  chatRooms,
+  messages,
+  roomMembers,
+  users,
+} from '../db/schema.js';
+import {
+  updateChatRoomSchema
+} from '../db/zod.schema.js';
+import { authenticateToken } from '../middleware/auth.js';
+import { deltaTrackingService } from '../services/delta-tracking.service.js';
 
 export const messagingRouter = new Hono();
 
-// Chat Room Routes
-
-// Get all chat rooms for a user
-messagingRouter.get('/rooms', authenticateToken, async (c) => {
-  try {
-    // use interface or type instead of {id: number}
-    const userId = (c.get('user') as User).id;
-    
-    const userRooms = await db
-      .select({
-        room: chatRooms,
-        membership: roomMembers,
-      })
-      .from(chatRooms)
-      .innerJoin(roomMembers, eq(chatRooms.id, roomMembers.roomId))
-      .where(eq(roomMembers.userId, userId))
-      .orderBy(desc(chatRooms.updatedAt));
-
-    return c.json(userRooms);
-  } catch (error) {
-    return c.json({ error: 'Failed to fetch chat rooms' }, 500);
-  }
+// Validation schemas
+const createRoomSchema = z.object({
+  name: z.string().min(1, 'Room name is required').max(100, 'Room name too long'),
+  description: z.string().max(1000, 'Description too long').optional(),
+  isPrivate: z.boolean().default(false),
+  initialMembers: z.array(z.string().uuid()).optional().default([]),
 });
 
-// Get chat room by ID
-messagingRouter.get('/rooms/:publicId', authenticateToken, async (c) => {
-  try {
-    const publicId = c.req.param('publicId');
-    const userId = (c.get('user') as User).id;
-
-    // Check if user is a member of this room
-    const roomMembership = await db
-      .select({
-        room: chatRooms,
-        membership: roomMembers,
-      })
-      .from(chatRooms)
-      .innerJoin(roomMembers, eq(chatRooms.id, roomMembers.roomId))
-      .where(
-        and(
-          eq(chatRooms.publicId, publicId),
-          eq(roomMembers.userId, userId)
-        )
-      )
-      .limit(1);
-
-    if (roomMembership.length === 0) {
-      return c.json({ error: 'Chat room not found or access denied' }, 404);
-    }
-
-    return c.json(roomMembership[0]);
-  } catch (error) {
-    return c.json({ error: 'Failed to fetch chat room' }, 500);
-  }
+const sendMessageSchema = z.object({
+  content: z.string().min(1, 'Message content is required').max(5000, 'Message too long'),
+  messageType: z.string().max(50).default('text'),
+  metadata: z.record(z.any()).optional(),
 });
 
-// Create chat room
-messagingRouter.post(
-  '/rooms',
+const getRoomsSchema = z.object({
+  includeMembers: z.boolean().default(false),
+  includeLastMessage: z.boolean().default(true),
+  limit: z.number().int().min(1).max(50).default(20),
+  offset: z.number().int().min(0).default(0),
+});
+
+const getMessagesSchema = z.object({
+  limit: z.number().int().min(1).max(100).default(50),
+  offset: z.number().int().min(0).default(0),
+  before: z.string().optional(), // Message ID to paginate before
+  after: z.string().optional(), // Message ID to paginate after
+});
+
+const addMemberSchema = z.object({
+  userId: z.string().uuid('Invalid user ID'),
+  isAdmin: z.boolean().default(false),
+});
+
+// POST /messaging/rooms - Create a new chat room
+messagingRouter.post('/rooms',
   authenticateToken,
-  validateRequest(insertChatRoomSchema),
+  zValidator('json', createRoomSchema),
   async (c) => {
     try {
-      const roomData: CreateChatRoomRequest = await c.req.json();
-      const userId = (c.get('user') as User).id;
-      
+      const user = c.get('user');
+      const roomData = c.req.valid('json');
+
+      console.log(`💬 ${user.username} creating chat room: ${roomData.name}`);
+
       // Create the chat room
       const [newRoom] = await db
         .insert(chatRooms)
         .values({
-          ...roomData,
-          createdById: userId,
+          name: roomData.name,
+          description: roomData.description,
+          isPrivate: roomData.isPrivate,
+          createdById: user.id,
         })
         .returning();
 
       // Add creator as admin member
-      await db.insert(roomMembers).values({
-        roomId: newRoom.id,
-        userId: userId,
-        isAdmin: true,
-      });
-
-      return c.json(newRoom, 201);
-    } catch (error) {
-      return c.json({ error: 'Failed to create chat room' }, 500);
-    }
-  }
-);
-
-// Update chat room
-messagingRouter.put(
-  '/rooms/:publicId',
-  authenticateToken,
-  validateRequest(updateChatRoomSchema),
-  async (c) => {
-    try {
-      const publicId = c.req.param('publicId');
-      const updateData: UpdateChatRoomRequest = await c.req.json();
-      const userId = (c.get('user') as User).id;
-
-      // Check if user is admin of this room
-      const adminCheck = await db
-        .select()
-        .from(chatRooms)
-        .innerJoin(roomMembers, eq(chatRooms.id, roomMembers.roomId))
-        .where(
-          and(
-            eq(chatRooms.publicId, publicId),
-            eq(roomMembers.userId, userId),
-            eq(roomMembers.isAdmin, true)
-          )
-        )
-        .limit(1);
-
-      if (adminCheck.length === 0) {
-        return c.json({ error: 'Not authorized to update this room' }, 403);
-      }
-
-      const [updatedRoom] = await db
-        .update(chatRooms)
-        .set({ ...updateData, updatedAt: new Date() })
-        .where(eq(chatRooms.publicId, publicId))
-        .returning();
-
-      return c.json(updatedRoom);
-    } catch (error) {
-      return c.json({ error: 'Failed to update chat room' }, 500);
-    }
-  }
-);
-
-// Join chat room
-messagingRouter.post(
-  '/rooms/:publicId/join',
-  authenticateToken,
-  async (c) => {
-    try {
-      const publicId = c.req.param('publicId');
-      const userId = (c.get('user') as User).id;
-
-      // Get room details
-      const room = await db
-        .select()
-        .from(chatRooms)
-        .where(eq(chatRooms.publicId, publicId))
-        .limit(1);
-
-      if (room.length === 0) {
-        return c.json({ error: 'Chat room not found' }, 404);
-      }
-
-      // Check if user is already a member
-      const existingMembership = await db
-        .select()
-        .from(roomMembers)
-        .where(
-          and(
-            eq(roomMembers.roomId, room[0].id),
-            eq(roomMembers.userId, userId)
-          )
-        )
-        .limit(1);
-
-      if (existingMembership.length > 0) {
-        return c.json({ error: 'Already a member of this room' }, 400);
-      }
-
-      // Add user to room
-      const [newMembership] = await db
+      await db
         .insert(roomMembers)
         .values({
-          roomId: room[0].id,
-          userId: userId,
-          isAdmin: false,
-        })
-        .returning();
+          roomId: newRoom.id,
+          userId: user.id,
+          isAdmin: true,
+        });
 
-      return c.json(newMembership, 201);
+      // Add initial members if provided
+      if (roomData.initialMembers && roomData.initialMembers.length > 0) {
+        const memberValues = roomData.initialMembers
+          .filter(memberId => memberId !== user.id) // Don't duplicate creator
+          .map(memberId => ({
+            roomId: newRoom.id,
+            userId: memberId,
+            isAdmin: false,
+          }));
+
+        if (memberValues.length > 0) {
+          await db.insert(roomMembers).values(memberValues);
+        }
+      }
+
+      // Track the change
+      await deltaTrackingService.trackChange({
+        entityType: 'chat_room',
+        entityId: newRoom.id,
+        changeType: 'create',
+        newData: newRoom,
+        affectedUserId: user.id,
+        triggeredBy: user.id,
+      });
+
+      return c.json({
+        success: true,
+        data: newRoom,
+        message: `Chat room "${newRoom.name}" created successfully`,
+      });
     } catch (error) {
-      return c.json({ error: 'Failed to join chat room' }, 500);
+      console.error('Error creating chat room:', error);
+      return c.json({
+        success: false,
+        error: 'Failed to create chat room',
+      }, 500);
     }
   }
 );
 
-// Message Routes
+// GET /messaging/rooms - Get user's chat rooms
+messagingRouter.get('/rooms',
+  authenticateToken,
+  zValidator('query', getRoomsSchema),
+  async (c) => {
+    try {
+      const user = c.get('user');
+      const options = c.req.valid('query');
 
-// Get messages for a room
-messagingRouter.get('/rooms/:publicId/messages', authenticateToken, async (c) => {
+      console.log(`💬 Getting chat rooms for ${user.username}`);
+
+      // Get rooms where user is a member
+      let roomsQuery = db
+        .select({
+          roomId: chatRooms.id,
+          publicId: chatRooms.publicId,
+          name: chatRooms.name,
+          description: chatRooms.description,
+          isPrivate: chatRooms.isPrivate,
+          createdById: chatRooms.createdById,
+          createdAt: chatRooms.createdAt,
+          userIsAdmin: roomMembers.isAdmin,
+          joinedAt: roomMembers.joinedAt,
+        })
+        .from(roomMembers)
+        .leftJoin(chatRooms, eq(roomMembers.roomId, chatRooms.id))
+        .where(eq(roomMembers.userId, user.id))
+        .orderBy(desc(chatRooms.updatedAt))
+        .limit(options.limit)
+        .offset(options.offset);
+
+      const userRooms = await roomsQuery;
+
+      // Enhance with additional data if requested
+      const enhancedRooms = await Promise.all(
+        userRooms.map(async (room) => {
+          const enhanced: any = { ...room };
+
+          // Add member count and members if requested
+          if (options.includeMembers) {
+            const members = await db
+              .select({
+                userId: roomMembers.userId,
+                username: users.username,
+                avatarUrl: users.avatarUrl,
+                isAdmin: roomMembers.isAdmin,
+                joinedAt: roomMembers.joinedAt,
+              })
+              .from(roomMembers)
+              .leftJoin(users, eq(roomMembers.userId, users.id))
+              .where(eq(roomMembers.roomId, room.roomId))
+              .orderBy(asc(roomMembers.joinedAt));
+
+            enhanced.members = members;
+            enhanced.memberCount = members.length;
+          } else {
+            const memberCount = await db
+              .select({ count: count(roomMembers.userId) })
+              .from(roomMembers)
+              .where(eq(roomMembers.roomId, room.roomId));
+
+            enhanced.memberCount = memberCount[0]?.count || 0;
+          }
+
+          // Add last message if requested
+          if (options.includeLastMessage) {
+            const lastMessage = await db
+              .select({
+                messageId: messages.id,
+                content: messages.content,
+                messageType: messages.messageType,
+                senderUsername: users.username,
+                createdAt: messages.createdAt,
+              })
+              .from(messages)
+              .leftJoin(users, eq(messages.senderId, users.id))
+              .where(eq(messages.roomId, room.roomId))
+              .orderBy(desc(messages.createdAt))
+              .limit(1);
+
+            enhanced.lastMessage = lastMessage[0] || null;
+          }
+
+          return enhanced;
+        })
+      );
+
+      return c.json({
+        success: true,
+        data: {
+          rooms: enhancedRooms,
+          pagination: {
+            limit: options.limit,
+            offset: options.offset,
+            hasMore: enhancedRooms.length === options.limit,
+          },
+        },
+      });
+    } catch (error) {
+      console.error('Error getting chat rooms:', error);
+      return c.json({
+        success: false,
+        error: 'Failed to get chat rooms',
+      }, 500);
+    }
+  }
+);
+
+// GET /messaging/rooms/:roomId - Get specific chat room details
+messagingRouter.get('/rooms/:roomId', authenticateToken, async (c) => {
   try {
-    const publicId = c.req.param('publicId');
-    const userId = (c.get('user') as User).id;
-    const limit = Number(c.req.query('limit') || '50');
-    const offset = Number(c.req.query('offset') || '0');
+    const user = c.get('user');
+    const roomId = c.req.param('roomId');
 
-    // Check if user is a member of this room
-    const roomMembership = await db
-      .select({ roomId: chatRooms.id })
-      .from(chatRooms)
-      .innerJoin(roomMembers, eq(chatRooms.id, roomMembers.roomId))
-      .where(
-        and(
-          eq(chatRooms.publicId, publicId),
-          eq(roomMembers.userId, userId)
-        )
-      )
-      .limit(1);
+    console.log(`💬 Getting chat room details: ${roomId}`);
 
-    if (roomMembership.length === 0) {
-      return c.json({ error: 'Not authorized to view messages' }, 403);
+    // Verify user is a member of the room
+    const membership = await db.query.roomMembers.findFirst({
+      where: and(
+        eq(roomMembers.roomId, roomId),
+        eq(roomMembers.userId, user.id)
+      ),
+    });
+
+    if (!membership) {
+      return c.json({
+        success: false,
+        error: 'Access denied. You are not a member of this room.',
+      }, 403);
     }
 
-    const roomMessages = await db
+    // Get room details
+    const room = await db.query.chatRooms.findFirst({
+      where: eq(chatRooms.id, roomId),
+    });
+
+    if (!room) {
+      return c.json({
+        success: false,
+        error: 'Chat room not found',
+      }, 404);
+    }
+
+    // Get all members
+    const members = await db
       .select({
-        message: messages,
-        sender: {
-          publicId: users.publicId,
-          firstName: users.firstName,
-          lastName: users.lastName,
-          avatarUrl: users.avatarUrl,
-        },
+        userId: roomMembers.userId,
+        username: users.username,
+        avatarUrl: users.avatarUrl,
+        isAdmin: roomMembers.isAdmin,
+        joinedAt: roomMembers.joinedAt,
+      })
+      .from(roomMembers)
+      .leftJoin(users, eq(roomMembers.userId, users.id))
+      .where(eq(roomMembers.roomId, roomId))
+      .orderBy(asc(roomMembers.joinedAt));
+
+    // Get room statistics
+    const stats = await db
+      .select({
+        totalMessages: count(messages.id),
+        lastActivity: sql<Date>`MAX(${messages.createdAt})`,
       })
       .from(messages)
-      .innerJoin(users, eq(messages.senderId, users.id))
-      .where(eq(messages.roomId, roomMembership[0].roomId))
-      .orderBy(desc(messages.createdAt))
-      .limit(limit)
-      .offset(offset);
+      .where(eq(messages.roomId, roomId));
 
-    return c.json(roomMessages);
+    return c.json({
+      success: true,
+      data: {
+        ...room,
+        members,
+        memberCount: members.length,
+        userMembership: membership,
+        statistics: stats[0],
+      },
+    });
   } catch (error) {
-    return c.json({ error: 'Failed to fetch messages' }, 500);
+    console.error('Error getting chat room:', error);
+    return c.json({
+      success: false,
+      error: 'Failed to get chat room',
+    }, 500);
   }
 });
 
-// Send message
-messagingRouter.post(
-  '/rooms/:publicId/messages',
+// PUT /messaging/rooms/:roomId - Update chat room (admin only)
+messagingRouter.put('/rooms/:roomId',
   authenticateToken,
-  validateRequest(insertMessageSchema),
+  zValidator('json', updateChatRoomSchema),
   async (c) => {
     try {
-      const publicId = c.req.param('publicId');
-      const messageData: CreateMessageRequest = await c.req.json();
-      const userId = (c.get('user') as User).id;
+      const user = c.get('user');
+      const roomId = c.req.param('roomId');
+      const updateData = c.req.valid('json');
 
-      // Check if user is a member of this room
-      const roomMembership = await db
-        .select({ roomId: chatRooms.id })
-        .from(chatRooms)
-        .innerJoin(roomMembers, eq(chatRooms.id, roomMembers.roomId))
-        .where(
-          and(
-            eq(chatRooms.publicId, publicId),
-            eq(roomMembers.userId, userId)
-          )
-        )
-        .limit(1);
+      console.log(`✏️ ${user.username} updating chat room: ${roomId}`);
 
-      if (roomMembership.length === 0) {
-        return c.json({ error: 'Not authorized to send messages' }, 403);
+      // Verify user is an admin of the room
+      const membership = await db.query.roomMembers.findFirst({
+        where: and(
+          eq(roomMembers.roomId, roomId),
+          eq(roomMembers.userId, user.id),
+          eq(roomMembers.isAdmin, true)
+        ),
+      });
+
+      if (!membership) {
+        return c.json({
+          success: false,
+          error: 'Access denied. Only room admins can update room settings.',
+        }, 403);
       }
 
-      const [newMessage] = await db
-        .insert(messages)
-        .values({
-          ...messageData,
-          roomId: roomMembership[0].roomId,
-          senderId: userId,
+      // Update the room
+      const [updatedRoom] = await db
+        .update(chatRooms)
+        .set({
+          ...updateData,
+          updatedAt: new Date(),
         })
+        .where(eq(chatRooms.id, roomId))
         .returning();
 
-      // Update room's updatedAt timestamp
-      await db
-        .update(chatRooms)
-        .set({ updatedAt: new Date() })
-        .where(eq(chatRooms.id, roomMembership[0].roomId));
+      // Track the change
+      await deltaTrackingService.trackChange({
+        entityType: 'chat_room',
+        entityId: roomId,
+        changeType: 'update',
+        newData: updatedRoom,
+        affectedUserId: user.id,
+        triggeredBy: user.id,
+      });
 
-      return c.json(newMessage, 201);
+      return c.json({
+        success: true,
+        data: updatedRoom,
+        message: 'Chat room updated successfully',
+      });
     } catch (error) {
-      return c.json({ error: 'Failed to send message' }, 500);
+      console.error('Error updating chat room:', error);
+      return c.json({
+        success: false,
+        error: 'Failed to update chat room',
+      }, 500);
     }
   }
 );
 
-// Get room members
-messagingRouter.get('/rooms/:publicId/members', authenticateToken, async (c) => {
+// DELETE /messaging/rooms/:roomId - Delete chat room (admin only)
+messagingRouter.delete('/rooms/:roomId', authenticateToken, async (c) => {
   try {
-    const publicId = c.req.param('publicId');
-    const userId = (c.get('user') as User).id;
+    const user = c.get('user');
+    const roomId = c.req.param('roomId');
 
-    // Check if user is a member of this room
-    const roomCheck = await db
-      .select({ roomId: chatRooms.id })
-      .from(chatRooms)
-      .innerJoin(roomMembers, eq(chatRooms.id, roomMembers.roomId))
-      .where(
-        and(
-          eq(chatRooms.publicId, publicId),
-          eq(roomMembers.userId, userId)
-        )
-      )
-      .limit(1);
+    console.log(`🗑️ ${user.username} deleting chat room: ${roomId}`);
 
-    if (roomCheck.length === 0) {
-      return c.json({ error: 'Not authorized to view members' }, 403);
+    // Verify user is an admin of the room or the creator
+    const room = await db.query.chatRooms.findFirst({
+      where: eq(chatRooms.id, roomId),
+    });
+
+    if (!room) {
+      return c.json({
+        success: false,
+        error: 'Chat room not found',
+      }, 404);
     }
 
-    const members = await db
-      .select({
-        membership: roomMembers,
-        user: {
-          publicId: users.publicId,
-          firstName: users.firstName,
-          lastName: users.lastName,
-          avatarUrl: users.avatarUrl,
-        },
-      })
-      .from(roomMembers)
-      .innerJoin(users, eq(roomMembers.userId, users.id))
-      .where(eq(roomMembers.roomId, roomCheck[0].roomId));
+    const membership = await db.query.roomMembers.findFirst({
+      where: and(
+        eq(roomMembers.roomId, roomId),
+        eq(roomMembers.userId, user.id),
+        eq(roomMembers.isAdmin, true)
+      ),
+    });
 
-    return c.json(members);
+    if (!membership && room.createdById !== user.id) {
+      return c.json({
+        success: false,
+        error: 'Access denied. Only room admins or creator can delete the room.',
+      }, 403);
+    }
+
+    // Delete the room (cascade will handle messages and members)
+    await db
+      .delete(chatRooms)
+      .where(eq(chatRooms.id, roomId));
+
+    // Track the change
+    await deltaTrackingService.trackChange({
+      entityType: 'chat_room',
+      entityId: roomId,
+      changeType: 'delete',
+      oldData: room,
+      affectedUserId: user.id,
+      triggeredBy: user.id,
+    });
+
+    return c.json({
+      success: true,
+      message: `Chat room "${room.name}" deleted successfully`,
+    });
   } catch (error) {
-    return c.json({ error: 'Failed to fetch room members' }, 500);
+    console.error('Error deleting chat room:', error);
+    return c.json({
+      success: false,
+      error: 'Failed to delete chat room',
+    }, 500);
+  }
+});
+
+// POST /messaging/rooms/:roomId/messages - Send message to room
+messagingRouter.post('/rooms/:roomId/messages',
+  authenticateToken,
+  zValidator('json', sendMessageSchema),
+  async (c) => {
+    try {
+      const user = c.get('user');
+      const roomId = c.req.param('roomId');
+      const messageData = c.req.valid('json');
+
+      console.log(`💬 ${user.username} sending message to room: ${roomId}`);
+
+      // Verify user is a member of the room
+      const membership = await db.query.roomMembers.findFirst({
+        where: and(
+          eq(roomMembers.roomId, roomId),
+          eq(roomMembers.userId, user.id)
+        ),
+      });
+
+      if (!membership) {
+        return c.json({
+          success: false,
+          error: 'Access denied. You are not a member of this room.',
+        }, 403);
+      }
+
+      // Create the message
+      const [newMessage] = await db
+        .insert(messages)
+        .values({
+          roomId,
+          senderId: user.id,
+          content: messageData.content,
+          messageType: messageData.messageType,
+          metadata: messageData.metadata,
+        })
+        .returning();
+
+      // Update room's last activity
+      await db
+        .update(chatRooms)
+        .set({ updatedAt: new Date() })
+        .where(eq(chatRooms.id, roomId));
+
+      // Get sender info for response
+      const messageWithSender = {
+        ...newMessage,
+        senderUsername: user.username,
+        senderAvatarUrl: user.avatarUrl,
+      };
+
+      // Track the change
+      await deltaTrackingService.trackChange({
+        entityType: 'message',
+        entityId: newMessage.id,
+        changeType: 'create',
+        newData: newMessage,
+        affectedUserId: user.id,
+        relatedEntityId: roomId,
+        triggeredBy: user.id,
+      });
+
+      return c.json({
+        success: true,
+        data: messageWithSender,
+        message: 'Message sent successfully',
+      });
+    } catch (error) {
+      console.error('Error sending message:', error);
+      return c.json({
+        success: false,
+        error: 'Failed to send message',
+      }, 500);
+    }
+  }
+);
+
+// GET /messaging/rooms/:roomId/messages - Get messages from room
+messagingRouter.get('/rooms/:roomId/messages',
+  authenticateToken,
+  zValidator('query', getMessagesSchema),
+  async (c) => {
+    try {
+      const user = c.get('user');
+      const roomId = c.req.param('roomId');
+      const options = c.req.valid('query');
+
+      console.log(`💬 Getting messages for room: ${roomId}`);
+
+      // Verify user is a member of the room
+      const membership = await db.query.roomMembers.findFirst({
+        where: and(
+          eq(roomMembers.roomId, roomId),
+          eq(roomMembers.userId, user.id)
+        ),
+      });
+
+      if (!membership) {
+        return c.json({
+          success: false,
+          error: 'Access denied. You are not a member of this room.',
+        }, 403);
+      }
+
+      // Build messages query
+      let messagesQuery = db
+        .select({
+          messageId: messages.id,
+          publicId: messages.publicId,
+          content: messages.content,
+          messageType: messages.messageType,
+          metadata: messages.metadata,
+          senderId: messages.senderId,
+          senderUsername: users.username,
+          senderAvatarUrl: users.avatarUrl,
+          createdAt: messages.createdAt,
+          updatedAt: messages.updatedAt,
+        })
+        .from(messages)
+        .leftJoin(users, eq(messages.senderId, users.id))
+        .where(eq(messages.roomId, roomId))
+        .orderBy(desc(messages.createdAt))
+        .limit(options.limit)
+        .offset(options.offset);
+
+      // Apply cursor-based pagination if specified
+      if (options.before) {
+        const beforeMessage = await db.query.messages.findFirst({
+          where: eq(messages.id, options.before),
+        });
+        if (beforeMessage) {
+          messagesQuery = messagesQuery.where(
+            sql`${messages.createdAt} < ${beforeMessage.createdAt}`
+          );
+        }
+      }
+
+      if (options.after) {
+        const afterMessage = await db.query.messages.findFirst({
+          where: eq(messages.id, options.after),
+        });
+        if (afterMessage) {
+          messagesQuery = messagesQuery.where(
+            sql`${messages.createdAt} > ${afterMessage.createdAt}`
+          );
+        }
+      }
+
+      const roomMessages = await messagesQuery;
+
+      return c.json({
+        success: true,
+        data: {
+          messages: roomMessages.reverse(), // Reverse to show oldest first
+          pagination: {
+            limit: options.limit,
+            offset: options.offset,
+            hasMore: roomMessages.length === options.limit,
+            before: options.before,
+            after: options.after,
+          },
+        },
+      });
+    } catch (error) {
+      console.error('Error getting messages:', error);
+      return c.json({
+        success: false,
+        error: 'Failed to get messages',
+      }, 500);
+    }
+  }
+);
+
+// PUT /messaging/messages/:messageId - Edit message (sender only)
+messagingRouter.put('/messages/:messageId',
+  authenticateToken,
+  zValidator('json', z.object({
+    content: z.string().min(1).max(5000),
+  })),
+  async (c) => {
+    try {
+      const user = c.get('user');
+      const messageId = c.req.param('messageId');
+      const { content } = c.req.valid('json');
+
+      console.log(`✏️ ${user.username} editing message: ${messageId}`);
+
+      // Get the message
+      const message = await db.query.messages.findFirst({
+        where: eq(messages.id, messageId),
+      });
+
+      if (!message) {
+        return c.json({
+          success: false,
+          error: 'Message not found',
+        }, 404);
+      }
+
+      // Check if user is the sender
+      if (message.senderId !== user.id) {
+        return c.json({
+          success: false,
+          error: 'Access denied. You can only edit your own messages.',
+        }, 403);
+      }
+
+      // Check if message is too old to edit (e.g., 24 hours)
+      const messageAge = Date.now() - message.createdAt.getTime();
+      const maxEditTime = 24 * 60 * 60 * 1000; // 24 hours
+
+      if (messageAge > maxEditTime) {
+        return c.json({
+          success: false,
+          error: 'Message is too old to edit',
+        }, 400);
+      }
+
+      // Update the message
+      const [updatedMessage] = await db
+        .update(messages)
+        .set({
+          content,
+          updatedAt: new Date(),
+        })
+        .where(eq(messages.id, messageId))
+        .returning();
+
+      // Track the change
+      await deltaTrackingService.trackChange({
+        entityType: 'message',
+        entityId: messageId,
+        changeType: 'update',
+        oldData: message,
+        newData: updatedMessage,
+        affectedUserId: user.id,
+        triggeredBy: user.id,
+      });
+
+      return c.json({
+        success: true,
+        data: updatedMessage,
+        message: 'Message updated successfully',
+      });
+    } catch (error) {
+      console.error('Error editing message:', error);
+      return c.json({
+        success: false,
+        error: 'Failed to edit message',
+      }, 500);
+    }
+  }
+);
+
+// DELETE /messaging/messages/:messageId - Delete message (sender or admin)
+messagingRouter.delete('/messages/:messageId', authenticateToken, async (c) => {
+  try {
+    const user = c.get('user');
+    const messageId = c.req.param('messageId');
+
+    console.log(`🗑️ ${user.username} deleting message: ${messageId}`);
+
+    // Get the message
+    const message = await db.query.messages.findFirst({
+      where: eq(messages.id, messageId),
+    });
+
+    if (!message) {
+      return c.json({
+        success: false,
+        error: 'Message not found',
+      }, 404);
+    }
+
+    // Check if user can delete (sender, room admin, or global admin)
+    let canDelete = message.senderId === user.id || user.role === 'admin';
+
+    if (!canDelete) {
+      // Check if user is room admin
+      const membership = await db.query.roomMembers.findFirst({
+        where: and(
+          eq(roomMembers.roomId, message.roomId),
+          eq(roomMembers.userId, user.id),
+          eq(roomMembers.isAdmin, true)
+        ),
+      });
+      canDelete = !!membership;
+    }
+
+    if (!canDelete) {
+      return c.json({
+        success: false,
+        error: 'Access denied. You can only delete your own messages or you must be a room admin.',
+      }, 403);
+    }
+
+    // Delete the message
+    await db
+      .delete(messages)
+      .where(eq(messages.id, messageId));
+
+    // Track the change
+    await deltaTrackingService.trackChange({
+      entityType: 'message',
+      entityId: messageId,
+      changeType: 'delete',
+      oldData: message,
+      affectedUserId: message.senderId,
+      triggeredBy: user.id,
+    });
+
+    return c.json({
+      success: true,
+      message: 'Message deleted successfully',
+    });
+  } catch (error) {
+    console.error('Error deleting message:', error);
+    return c.json({
+      success: false,
+      error: 'Failed to delete message',
+    }, 500);
+  }
+});
+
+// POST /messaging/rooms/:roomId/members - Add member to room (admin only)
+messagingRouter.post('/rooms/:roomId/members',
+  authenticateToken,
+  zValidator('json', addMemberSchema),
+  async (c) => {
+    try {
+      const user = c.get('user');
+      const roomId = c.req.param('roomId');
+      const { userId: newMemberId, isAdmin } = c.req.valid('json');
+
+      console.log(`➕ ${user.username} adding member to room: ${roomId}`);
+
+      // Verify user is an admin of the room
+      const membership = await db.query.roomMembers.findFirst({
+        where: and(
+          eq(roomMembers.roomId, roomId),
+          eq(roomMembers.userId, user.id),
+          eq(roomMembers.isAdmin, true)
+        ),
+      });
+
+      if (!membership) {
+        return c.json({
+          success: false,
+          error: 'Access denied. Only room admins can add members.',
+        }, 403);
+      }
+
+      // Check if user is already a member
+      const existingMembership = await db.query.roomMembers.findFirst({
+        where: and(
+          eq(roomMembers.roomId, roomId),
+          eq(roomMembers.userId, newMemberId)
+        ),
+      });
+
+      if (existingMembership) {
+        return c.json({
+          success: false,
+          error: 'User is already a member of this room',
+        }, 400);
+      }
+
+      // Verify the user to be added exists
+      const targetUser = await db.query.users.findFirst({
+        where: eq(users.id, newMemberId),
+      });
+
+      if (!targetUser) {
+        return c.json({
+          success: false,
+          error: 'User not found',
+        }, 404);
+      }
+
+      // Add the member
+      const [newMembership] = await db
+        .insert(roomMembers)
+        .values({
+          roomId,
+          userId: newMemberId,
+          isAdmin,
+        })
+        .returning();
+
+      // Track the change
+      await deltaTrackingService.trackChange({
+        entityType: 'room_member',
+        entityId: newMembership.id,
+        changeType: 'create',
+        newData: newMembership,
+        affectedUserId: newMemberId,
+        relatedEntityId: roomId,
+        triggeredBy: user.id,
+      });
+
+      return c.json({
+        success: true,
+        data: {
+          ...newMembership,
+          username: targetUser.username,
+          avatarUrl: targetUser.avatarUrl,
+        },
+        message: `${targetUser.username} added to room successfully`,
+      });
+    } catch (error) {
+      console.error('Error adding room member:', error);
+      return c.json({
+        success: false,
+        error: 'Failed to add member to room',
+      }, 500);
+    }
+  }
+);
+
+// DELETE /messaging/rooms/:roomId/members/:userId - Remove member from room
+messagingRouter.delete('/rooms/:roomId/members/:userId', authenticateToken, async (c) => {
+  try {
+    const user = c.get('user');
+    const roomId = c.req.param('roomId');
+    const targetUserId = c.req.param('userId');
+
+    console.log(`❌ ${user.username} removing member from room: ${roomId}`);
+
+    // Get the membership to be removed
+    const targetMembership = await db.query.roomMembers.findFirst({
+      where: and(
+        eq(roomMembers.roomId, roomId),
+        eq(roomMembers.userId, targetUserId)
+      ),
+    });
+
+    if (!targetMembership) {
+      return c.json({
+        success: false,
+        error: 'User is not a member of this room',
+      }, 404);
+    }
+
+    // Check permissions: users can remove themselves, admins can remove others
+    const canRemove = targetUserId === user.id; // Self-removal (leaving)
+    
+    if (!canRemove) {
+      // Check if current user is admin
+      const userMembership = await db.query.roomMembers.findFirst({
+        where: and(
+          eq(roomMembers.roomId, roomId),
+          eq(roomMembers.userId, user.id),
+          eq(roomMembers.isAdmin, true)
+        ),
+      });
+
+      if (!userMembership && user.role !== 'admin') {
+        return c.json({
+          success: false,
+          error: 'Access denied. Only room admins can remove other members.',
+        }, 403);
+      }
+    }
+
+    // Remove the member
+    await db
+      .delete(roomMembers)
+      .where(eq(roomMembers.id, targetMembership.id));
+
+    // Track the change
+    await deltaTrackingService.trackChange({
+      entityType: 'room_member',
+      entityId: targetMembership.id,
+      changeType: 'delete',
+      oldData: targetMembership,
+      affectedUserId: targetUserId,
+      relatedEntityId: roomId,
+      triggeredBy: user.id,
+    });
+
+    const action = targetUserId === user.id ? 'left the room' : 'was removed from the room';
+    
+    return c.json({
+      success: true,
+      message: `Member ${action} successfully`,
+    });
+  } catch (error) {
+    console.error('Error removing room member:', error);
+    return c.json({
+      success: false,
+      error: 'Failed to remove member from room',
+    }, 500);
   }
 });

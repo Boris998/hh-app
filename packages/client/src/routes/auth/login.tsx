@@ -32,7 +32,7 @@ function LoginPage() {
     clearError();
 
     try {
-      await login(formData.email, formData.password);
+      await login({email: formData.email, password: formData.password});
       console.log("Login completed, navigating...");
       navigate({ to: "/" });
     } catch (error) {

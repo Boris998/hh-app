@@ -4,10 +4,10 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
     "start": "tsx src/index.ts",
     "dev": "tsx watch src/index.ts",
     "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx src/db/migrations/migrate.ts",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
     "migrate:up": "drizzle-kit push",
@@ -16,11 +16,26 @@
     "seed:activity-types:update": "tsx src/db/seeds/seed-activity-types.ts update",
     "seed:activity-types:cleanup": "tsx src/db/seeds/seed-activity-types.ts cleanup",
     "seed:activity-types:full": "tsx src/db/seeds/seed-activity-types.ts full",
-    "setup:db": "pnpm db:push && pnpm seed:activity-types",
-    "setup:full": "tsx scripts/setup-database.ts",
     "migrate:skills": "tsx src/db/seeds/migrate-skills-to-tables.ts",
     "seed:mock-data": "tsx src/db/seeds/create-mock-data.ts",
-    "setup:full-with-data": "pnpm db:push && pnpm seed:activity-types && pnpm migrate:skills && pnpm seed:mock-data"
+    "populate:all": "tsx scripts/populate-test-data.ts",
+    "populate:interactive": "bash src/scripts/populate-all-data.sh",
+    "db:reset": "pnpm db:reset:full",
+    "db:reset:soft": "pnpm db:push --force && pnpm seed:activity-types && pnpm migrate:skills",
+    "db:reset:full": "pnpm db:push --force && pnpm populate:all",
+    "db:verify": "tsx scripts/verify-database.ts",
+    "setup:db": "pnpm db:push && pnpm seed:activity-types",
+    "setup:full": "tsx scripts/setup-database.ts",
+    "setup:complete": "pnpm db:reset:full",
+    "setup:full-with-data": "pnpm db:push && pnpm seed:activity-types && pnpm migrate:skills && pnpm seed:mock-data",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:ui": "vitest --ui",
+    "test:coverage": "vitest run --coverage",
+    "test:integration": "vitest run tests/integration",
+    "test:services": "vitest run tests/services",
+    "test:routers": "vitest run tests/routers",
+    "test:elo": "tsx test-elo-system.ts"
   },
   "keywords": [],
   "author": "",
@@ -29,6 +44,7 @@
   "dependencies": {
     "@hono/node-server": "^1.17.1",
     "@hono/zod-validator": "^0.4.1",
+    "argon2": "^0.43.1",
     "bcryptjs": "^3.0.2",
     "dotenv": "^16.5.0",
     "drizzle-orm": "^0.43.1",
@@ -45,11 +61,14 @@
     "zod-openapi": "^4.2.4"
   },
   "devDependencies": {
-    "@types/node": "^20.17.50",
+    "@types/node": "^20.19.9",
     "@types/pg": "^8.15.2",
+    "@vitest/ui": "^3.2.4",
+    "c8": "^10.1.3",
     "drizzle-kit": "^0.31.1",
     "tsx": "^4.20.3",
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
   },
   "type": "module"
 }

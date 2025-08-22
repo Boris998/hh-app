@@ -47,7 +47,7 @@ class FinalELOTester {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           email: 'test@example.com',
-          password: 'password123'
+          password: '1_Pass@hH-app'
         })
       });
 

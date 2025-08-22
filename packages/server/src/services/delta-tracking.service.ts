@@ -1,58 +1,61 @@
-// src/services/delta-tracking.service.ts - Delta tracking and calculation service
-
+// src/services/delta-tracking.service.ts - Complete fixed implementation with zod validation
 import { db } from "../db/client.js";
 import {
   entityChangeLog,
   userDeltaCursors,
   deltaSummaries,
-  type DeltaChange,
-  type UserDeltaResponse,
 } from "../db/delta-tracking.schema.js";
-import { users } from "../db/schema.js"; // Only import what we actually use
 import { eq, and, gte, desc, sql } from "drizzle-orm";
+import {
+  type EntityChangeLog,
+  type InsertEntityChangeLog,
+  type UserDeltaCursor,
+  type InsertUserDeltaCursor,
+  type UpdateUserDeltaCursor,
+  type DeltaChangeInput,
+  type UserDeltaResponse,
+  type DeltaQuery,
+  insertEntityChangeLogSchema,
+  insertUserDeltaCursorSchema,
+  updateUserDeltaCursorSchema,
+  deltaChangeInputSchema,
+  deltaQuerySchema,
+} from "../db/delta-tracking.schema.js";
 
 export class DeltaTrackingService {
   /**
-   * Log a change to the delta tracking system
+   * Track a change in the system (main method used by routers)
    */
-  async logChange(change: {
-    entityType:
-      | "elo"
-      | "activity"
-      | "skill_rating"
-      | "connection"
-      | "matchmaking";
-    entityId: string;
-    changeType: "create" | "update" | "delete";
-    affectedUserId?: string;
-    relatedEntityId?: string;
-    previousData?: any;
-    newData: any;
-    changeDetails?: any;
-    triggeredBy?: string;
-    changeSource?: string;
-  }): Promise<void> {
+  async trackChange(change: DeltaChangeInput): Promise<void> {
     try {
+      const validatedChange = deltaChangeInputSchema.parse(change);
+
       await db.insert(entityChangeLog).values({
-        entityType: change.entityType,
-        entityId: change.entityId,
-        changeType: change.changeType,
-        affectedUserId: change.affectedUserId,
-        relatedEntityId: change.relatedEntityId,
-        previousData: change.previousData || null,
-        newData: change.newData,
-        changeDetails: change.changeDetails || null,
-        triggeredBy: change.triggeredBy,
-        changeSource: change.changeSource || "system",
+        entityType: validatedChange.entityType,
+        entityId: validatedChange.entityId,
+        changeType: validatedChange.changeType,
+        affectedUserId: validatedChange.affectedUserId || null,
+        relatedEntityId: validatedChange.relatedEntityId || null,
+        previousData: validatedChange.previousData || null,
+        newData: validatedChange.newData,
+        changeDetails: validatedChange.changeDetails || null,
+        triggeredBy: validatedChange.triggeredBy || null,
+        changeSource: validatedChange.changeSource || "system",
       });
 
       console.log(
-        `📊 Delta logged: ${change.entityType}:${change.changeType} for entity ${change.entityId}`
+        `📊 Delta tracked: ${validatedChange.entityType}:${validatedChange.changeType} for entity ${validatedChange.entityId}`
       );
     } catch (error) {
-      console.error("Failed to log delta change:", error);
-      // Don't throw - delta logging failures shouldn't break main functionality
+      console.error("Failed to track delta change:", error);
     }
+  }
+
+  /**
+   * Legacy method for backwards compatibility
+   */
+  async logChange(change: DeltaChangeInput): Promise<void> {
+    return this.trackChange(change);
   }
 
   /**
@@ -66,7 +69,7 @@ export class DeltaTrackingService {
     activityId: string,
     triggeredBy?: string
   ): Promise<void> {
-    await this.logChange({
+    await this.trackChange({
       entityType: "elo",
       entityId: `${userId}-${activityTypeId}`,
       changeType: "update",
@@ -100,13 +103,13 @@ export class DeltaTrackingService {
     newData?: any,
     triggeredBy?: string
   ): Promise<void> {
-    // Log change for each affected user
     for (const userId of affectedUserIds) {
-      await this.logChange({
+      await this.trackChange({
         entityType: "activity",
         entityId: activityId,
         changeType,
         affectedUserId: userId,
+        relatedEntityId: activityId,
         previousData,
         newData,
         triggeredBy,
@@ -120,94 +123,63 @@ export class DeltaTrackingService {
    */
   async logSkillRatingChange(
     ratingId: string,
+    changeType: "create" | "update" | "delete",
     ratedUserId: string,
+    ratingUserId: string,
     activityId: string,
     skillData: any,
     triggeredBy?: string
   ): Promise<void> {
-    await this.logChange({
+    await this.trackChange({
       entityType: "skill_rating",
       entityId: ratingId,
-      changeType: "create",
+      changeType,
       affectedUserId: ratedUserId,
       relatedEntityId: activityId,
       newData: skillData,
+      changeDetails: {
+        ratingUserId,
+        activityId,
+      },
       triggeredBy,
       changeSource: "user_action",
     });
   }
 
   /**
-   * Get delta changes for a user since their last sync
+   * Get delta changes for a user since last sync
    */
   async getUserDeltas(
     userId: string,
-    clientType: "web" | "mobile" = "web",
-    forceRefresh: boolean = false
+    since?: Date,
+    entityTypes?: string[],
+    clientType: "web" | "mobile" = "web"
   ): Promise<UserDeltaResponse> {
-    console.log(`🔄 Getting deltas for user ${userId} (${clientType})`);
-
     try {
-      // Get or create user delta cursor
       const cursor = await this.getOrCreateUserCursor(userId, clientType);
 
-      // Determine sync timestamps
-      const syncTimestamps = {
-        elo: forceRefresh ? new Date(0) : cursor.lastELOSync || new Date(0),
-        activity: forceRefresh
-          ? new Date(0)
-          : cursor.lastActivitySync || new Date(0),
-        skillRating: forceRefresh
-          ? new Date(0)
-          : cursor.lastSkillRatingSync || new Date(0),
-        connection: forceRefresh
-          ? new Date(0)
-          : cursor.lastConnectionSync || new Date(0),
-        matchmaking: forceRefresh
-          ? new Date(0)
-          : cursor.lastMatchmakingSync || new Date(0),
-      };
+      const sinceDate = since || cursor.lastELOSync || new Date(0);
 
-      // Query changes since last sync
-      const changes = await db
-        .select({
-          id: entityChangeLog.id,
-          entityType: entityChangeLog.entityType,
-          entityId: entityChangeLog.entityId,
-          changeType: entityChangeLog.changeType,
-          affectedUserId: entityChangeLog.affectedUserId,
-          relatedEntityId: entityChangeLog.relatedEntityId,
-          previousData: entityChangeLog.previousData,
-          newData: entityChangeLog.newData,
-          changeDetails: entityChangeLog.changeDetails,
-          triggeredBy: entityChangeLog.triggeredBy,
-          changeSource: entityChangeLog.changeSource,
-          createdAt: entityChangeLog.createdAt,
-        })
-        .from(entityChangeLog)
-        .where(
-          and(
-            eq(entityChangeLog.affectedUserId, userId),
-            // Get changes newer than the oldest sync timestamp
-            gte(
-              entityChangeLog.createdAt,
-              this.getOldestSyncTime(syncTimestamps)
-            )
-          )
-        )
-        .orderBy(desc(entityChangeLog.createdAt))
-        .limit(100); // Prevent overwhelming responses
+      const whereConditions = [
+        eq(entityChangeLog.affectedUserId, userId),
+        gte(entityChangeLog.createdAt, sinceDate),
+      ];
 
-      // Filter changes by entity type and sync time
-      const filteredChanges = changes.filter((change) => {
-        const syncTime = this.getSyncTimeForEntityType(
-          change.entityType as any,
-          syncTimestamps
+      if (entityTypes && entityTypes.length > 0) {
+        whereConditions.push(
+          sql`${entityChangeLog.entityType} = ANY(${entityTypes})`
         );
-        return change.createdAt > syncTime;
-      });
+      }
 
-      // Update cursor timestamps
+      const changes = await db
+        .select()
+        .from(entityChangeLog)
+        .where(and(...whereConditions))
+        .orderBy(desc(entityChangeLog.createdAt))
+        .limit(100);
+
+      const filteredChanges = this.filterChangesByCursors(changes, cursor);
+
       const now = new Date();
       const newCursors = {
         lastELOSync: this.hasChangesOfType(filteredChanges, "elo")
@@ -233,12 +205,10 @@ export class DeltaTrackingService {
           : cursor.lastMatchmakingSync || now,
       };
 
-      // Update cursor in database
       if (filteredChanges.length > 0) {
         await this.updateUserCursor(userId, newCursors, clientType);
       }
 
-      // Calculate metadata
       const changeTypes = filteredChanges.reduce((acc, change) => {
         acc[change.entityType] = (acc[change.entityType] || 0) + 1;
         return acc;
@@ -261,78 +231,140 @@ export class DeltaTrackingService {
             : undefined,
       };
 
-      // Calculate adaptive poll interval
-      const recommendedPollInterval = this.calculateAdaptivePollInterval(
+      const recommendedPollInterval = this.calculatePollInterval(
         filteredChanges.length,
         clientType,
-        cursor.lastActiveAt || new Date()
+        cursor.lastActiveAt
       );
 
-      const response: UserDeltaResponse = {
+      return {
         hasChanges: filteredChanges.length > 0,
-        changes: filteredChanges as DeltaChange[],
+        changes: filteredChanges as EntityChangeLog[],
         newCursors,
         metadata,
         recommendedPollInterval,
       };
-
-      console.log(
-        `📊 Delta response: ${filteredChanges.length} changes, next poll in ${recommendedPollInterval}ms`
-      );
-      return response;
     } catch (error) {
       console.error("Error getting user deltas:", error);
-      throw error;
+      return {
+        hasChanges: false,
+        changes: [],
+        newCursors: {
+          lastELOSync: new Date(),
+          lastActivitySync: new Date(),
+          lastSkillRatingSync: new Date(),
+          lastConnectionSync: new Date(),
+          lastMatchmakingSync: new Date(),
+        },
+        metadata: {
+          totalChanges: 0,
+          changeTypes: {},
+        },
+        recommendedPollInterval: 30000,
+      };
     }
   }
 
   /**
-   * Get or create user delta cursor (PUBLIC method for router access)
+   * Get or create user delta cursor
    */
-  async getOrCreateUserCursor(userId: string, clientType: "web" | "mobile") {
-    const existing = await db
-      .select()
-      .from(userDeltaCursors)
-      .where(eq(userDeltaCursors.userId, userId))
-      .limit(1);
+  async getOrCreateUserCursor(
+    userId: string,
+    clientType: "web" | "mobile"
+  ): Promise<UserDeltaCursor> {
+    const existing = await db.query.userDeltaCursors.findFirst({
+      where: eq(userDeltaCursors.userId, userId),
+    });
 
-    if (existing.length > 0) {
-      // Update last active time
+    if (existing) {
+      // Ensure clientType is not null
+      const updatedClientType = existing.clientType || clientType;
+
       await db
         .update(userDeltaCursors)
         .set({
           lastActiveAt: new Date(),
-          clientType,
+          clientType: updatedClientType,
+          updatedAt: new Date(),
         })
         .where(eq(userDeltaCursors.userId, userId));
 
-      return existing[0];
+      return {
+        ...existing,
+        lastActiveAt: new Date(),
+        clientType: updatedClientType,
+      } as UserDeltaCursor;
     }
 
-    // Create new cursor
+    const cursorData: InsertUserDeltaCursor = {
+      userId,
+      clientType,
+      lastActiveAt: new Date(),
+    };
+
+    const validatedCursor = insertUserDeltaCursorSchema.parse(cursorData);
+
     const [newCursor] = await db
       .insert(userDeltaCursors)
-      .values({
-        userId,
-        clientType,
-        lastActiveAt: new Date(),
-      })
+      .values(validatedCursor)
       .returning();
 
-    return newCursor;
+    // Ensure clientType is not null in the returned cursor
+    return {
+      ...newCursor,
+      clientType: newCursor.clientType || clientType,
+    } as UserDeltaCursor;
   }
 
   /**
-   * Update user cursor timestamps (PUBLIC method for router access)
+   * Filter changes based on entity-specific cursor timestamps
    */
-  async updateUserCursor(
+  private filterChangesByCursors(
+    changes: any[],
+    cursor: UserDeltaCursor
+  ): EntityChangeLog[] {
+    if (!cursor) return changes as EntityChangeLog[];
+
+    return changes.filter((change) => {
+      const changeTime = new Date(change.createdAt);
+
+      switch (change.entityType) {
+        case "elo":
+          return changeTime > (cursor.lastELOSync || new Date(0));
+        case "activity":
+          return changeTime > (cursor.lastActivitySync || new Date(0));
+        case "skill_rating":
+          return changeTime > (cursor.lastSkillRatingSync || new Date(0));
+        case "connection":
+          return changeTime > (cursor.lastConnectionSync || new Date(0));
+        case "matchmaking":
+          return changeTime > (cursor.lastMatchmakingSync || new Date(0));
+        default:
+          return true;
+      }
+    }) as EntityChangeLog[];
+  }
+
+  /**
+   * Check if there are changes of a specific type
+   */
+  private hasChangesOfType(
+    changes: EntityChangeLog[],
+    entityType: string
+  ): boolean {
+    return changes.some((change) => change.entityType === entityType);
+  }
+
+  /**
+   * Update user cursor in database
+   */
+  private async updateUserCursor(
     userId: string,
-    cursors: Record<string, Date>,
+    cursors: any,
     clientType: "web" | "mobile"
   ): Promise<void> {
-    await db
-      .update(userDeltaCursors)
-      .set({
+    try {
+      const updateData: UpdateUserDeltaCursor = {
         lastELOSync: cursors.lastELOSync,
         lastActivitySync: cursors.lastActivitySync,
         lastSkillRatingSync: cursors.lastSkillRatingSync,
@@ -341,61 +373,429 @@ export class DeltaTrackingService {
         lastActiveAt: new Date(),
         clientType,
         updatedAt: new Date(),
-      })
-      .where(eq(userDeltaCursors.userId, userId));
+      };
+
+      const validatedUpdate = updateUserDeltaCursorSchema.parse(updateData);
+
+      await db
+        .update(userDeltaCursors)
+        .set(validatedUpdate)
+        .where(eq(userDeltaCursors.userId, userId));
+    } catch (error) {
+      console.error("Error updating user cursor:", error);
+    }
   }
 
   /**
-   * Helper functions
-   */
-  private getOldestSyncTime(syncTimestamps: Record<string, Date>): Date {
-    const times = Object.values(syncTimestamps).map((d) => d.getTime());
-    return new Date(Math.min(...times));
+ * Get changes for user (used by delta router /changes endpoint)
+ * This is an alias/wrapper around getUserDeltas for consistency
+ */
+async getChangesForUser(
+  userId: string,
+  since?: string,
+  entityType?: string,
+  limit: number = 50
+): Promise<EntityChangeLog[]> {
+  try {
+    const sinceDate = since ? new Date(since) : undefined;
+    const entityTypes = entityType ? [entityType] : undefined;
+    
+    const response = await this.getUserDeltas(
+      userId, 
+      sinceDate, 
+      entityTypes, 
+      'web'
+    );
+    
+    return response.changes;
+  } catch (error) {
+    console.error('Error getting changes for user:', error);
+    return [];
   }
+}
 
-  private getSyncTimeForEntityType(
-    entityType:
-      | "elo"
-      | "activity"
-      | "skill_rating"
-      | "connection"
-      | "matchmaking",
-    syncTimestamps: Record<string, Date>
-  ): Date {
-    const mapping = {
-      elo: syncTimestamps.elo,
-      activity: syncTimestamps.activity,
-      skill_rating: syncTimestamps.skillRating,
-      connection: syncTimestamps.connection,
-      matchmaking: syncTimestamps.matchmaking,
+/**
+ * Check if delta tracking service is healthy
+ */
+async isServiceHealthy(): Promise<boolean> {
+  try {
+    // Test database connectivity by trying to read from entity change log
+    await db
+      .select({ count: sql<number>`count(*)` })
+      .from(entityChangeLog)
+      .limit(1);
+    
+    return true;
+  } catch (error) {
+    console.error('Delta service health check failed:', error);
+    return false;
+  }
+}
+
+/**
+ * Get delta changes with full response structure (main method for delta router)
+ */
+async getDeltaChanges(
+  userId: string,
+  since?: string,
+  clientType: 'web' | 'mobile' | 'desktop' = 'web',
+  limit: number = 50,
+  entityType?: string
+): Promise<{
+  changes: EntityChangeLog[];
+  hasChanges: boolean;
+  lastSync: string;
+  recommendedPollInterval: number;
+  metadata: {
+    totalChanges: number;
+    entityTypes?: string[];
+  };
+}> {
+  try {
+    const sinceDate = since ? new Date(since) : undefined;
+    const entityTypes = entityType ? [entityType] : undefined;
+    
+    // Use mobile for desktop client type since the service only supports 'web' | 'mobile'
+    const serviceClientType = clientType === 'desktop' ? 'mobile' : clientType;
+    
+    const response = await this.getUserDeltas(
+      userId,
+      sinceDate,
+      entityTypes,
+      serviceClientType
+    );
+
+    return {
+      changes: response.changes,
+      hasChanges: response.hasChanges,
+      lastSync: new Date().toISOString(),
+      recommendedPollInterval: response.recommendedPollInterval,
+      metadata: {
+        totalChanges: response.metadata.totalChanges,
+        entityTypes: entityTypes,
+      }
     };
-    return mapping[entityType];
+  } catch (error) {
+    console.error('Error getting delta changes:', error);
+    return {
+      changes: [],
+      hasChanges: false,
+      lastSync: new Date().toISOString(),
+      recommendedPollInterval: 30000, // 30 seconds fallback
+      metadata: {
+        totalChanges: 0,
+      }
+    };
   }
+}
 
-  private hasChangesOfType(changes: any[], entityType: string): boolean {
-    return changes.some((c) => c.entityType === entityType);
+/**
+ * Test delta tracking functionality
+ */
+async testDeltaTracking(): Promise<boolean> {
+  try {
+    // Create a test change entry
+    const testEntityId = 'test-' + Date.now();
+    await this.trackChange({
+      entityType: 'test',
+      entityId: testEntityId,
+      changeType: 'create',
+      newData: { test: true },
+      changeSource: 'system_test',
+    });
+
+    // Try to read it back
+    const changes = await db
+      .select()
+      .from(entityChangeLog)
+      .where(eq(entityChangeLog.entityId, testEntityId))
+      .limit(1);
+
+    // Clean up test data
+    if (changes.length > 0) {
+      await db
+        .delete(entityChangeLog)
+        .where(eq(entityChangeLog.entityId, testEntityId));
+    }
+
+    return changes.length > 0;
+  } catch (error) {
+    console.error('Delta tracking test failed:', error);
+    return false;
   }
+}
+
+/**
+ * Get delta system health information
+ */
+async getDeltaSystemHealth(): Promise<{
+  status: 'healthy' | 'degraded' | 'unhealthy';
+  checks: {
+    database: boolean;
+    recentActivity: boolean;
+    errorRate: number;
+  };
+}> {
+  try {
+    // Check database connectivity
+    const dbHealthy = await this.isServiceHealthy();
+    
+    // Check for recent activity (changes in last hour)
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+    const recentChanges = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(entityChangeLog)
+      .where(gte(entityChangeLog.createdAt, oneHourAgo));
+    
+    const hasRecentActivity = (recentChanges[0]?.count || 0) > 0;
+    
+    // Simple error rate calculation (could be enhanced)
+    const errorRate = 0; // Placeholder - would need error tracking
+    
+    let status: 'healthy' | 'degraded' | 'unhealthy' = 'healthy';
+    if (!dbHealthy) {
+      status = 'unhealthy';
+    } else if (!hasRecentActivity) {
+      status = 'degraded';
+    }
+    
+    return {
+      status,
+      checks: {
+        database: dbHealthy,
+        recentActivity: hasRecentActivity,
+        errorRate,
+      }
+    };
+  } catch (error) {
+    console.error('Error getting delta system health:', error);
+    return {
+      status: 'unhealthy',
+      checks: {
+        database: false,
+        recentActivity: false,
+        errorRate: 1,
+      }
+    };
+  }
+}
+
+/**
+ * Reset user cursor for troubleshooting
+ */
+async resetUserCursor(
+  userId: string,
+  clientType: 'web' | 'mobile' = 'web',
+  entityType?: string
+): Promise<{
+  success: boolean;
+  message: string;
+  cursor?: UserDeltaCursor;
+}> {
+  try {
+    const now = new Date();
+    
+    if (entityType && entityType !== 'all') {
+      // Reset specific entity type cursor
+      const updateData: Partial<UpdateUserDeltaCursor> = {
+        lastActiveAt: now,
+        updatedAt: now,
+      };
+      
+      switch (entityType) {
+        case 'elo':
+          updateData.lastELOSync = now;
+          break;
+        case 'activity':
+          updateData.lastActivitySync = now;
+          break;
+        case 'skill_rating':
+          updateData.lastSkillRatingSync = now;
+          break;
+        case 'connection':
+          updateData.lastConnectionSync = now;
+          break;
+        case 'matchmaking':
+          updateData.lastMatchmakingSync = now;
+          break;
+        default:
+          throw new Error(`Unknown entity type: ${entityType}`);
+      }
+      
+      await db
+        .update(userDeltaCursors)
+        .set(updateData)
+        .where(eq(userDeltaCursors.userId, userId));
+        
+      return {
+        success: true,
+        message: `Reset ${entityType} cursor for user`,
+      };
+    } else {
+      // Reset all cursors
+      const updateData: UpdateUserDeltaCursor = {
+        lastELOSync: now,
+        lastActivitySync: now,
+        lastSkillRatingSync: now,
+        lastConnectionSync: now,
+        lastMatchmakingSync: now,
+        lastActiveAt: now,
+        clientType,
+        updatedAt: now,
+      };
+      
+      const validatedUpdate = updateUserDeltaCursorSchema.parse(updateData);
+      
+      await db
+        .update(userDeltaCursors)
+        .set(validatedUpdate)
+        .where(eq(userDeltaCursors.userId, userId));
+      
+      // Get the updated cursor
+      const cursor = await this.getOrCreateUserCursor(userId, clientType);
+      
+      return {
+        success: true,
+        message: 'Reset all cursors for user',
+        cursor,
+      };
+    }
+  } catch (error) {
+    console.error('Error resetting user cursor:', error);
+    return {
+      success: false,
+      message: 'Failed to reset user cursor',
+    };
+  }
+}
+
+/**
+ * Manual sync for testing/admin purposes
+ */
+async manualSync(
+  userId: string,
+  entityType: string,
+  forceFullSync: boolean = false
+): Promise<{
+  success: boolean;
+  message: string;
+  changesFound: number;
+}> {
+  try {
+    if (forceFullSync) {
+      // Reset cursor first to get all changes
+      await this.resetUserCursor(userId, 'web', entityType);
+    }
+    
+    // Get changes
+    const response = await this.getUserDeltas(
+      userId,
+      forceFullSync ? new Date(0) : undefined,
+      entityType === 'all' ? undefined : [entityType],
+      'web'
+    );
+    
+    return {
+      success: true,
+      message: `Manual sync completed for ${entityType}`,
+      changesFound: response.changes.length,
+    };
+  } catch (error) {
+    console.error('Error in manual sync:', error);
+    return {
+      success: false,
+      message: 'Manual sync failed',
+      changesFound: 0,
+    };
+  }
+}
+
+/**
+ * Get user-specific delta statistics
+ */
+async getDeltaStatistics(userId: string): Promise<{
+  totalChanges: number;
+  changesByType: Record<string, number>;
+  last24Hours: number;
+  lastWeek: number;
+}> {
+  try {
+    // Get total changes for user
+    const totalChanges = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(entityChangeLog)
+      .where(eq(entityChangeLog.affectedUserId, userId));
+    
+    // Get changes by type
+    const changesByTypeResult = await db
+      .select({
+        entityType: entityChangeLog.entityType,
+        count: sql<number>`count(*)`
+      })
+      .from(entityChangeLog)
+      .where(eq(entityChangeLog.affectedUserId, userId))
+      .groupBy(entityChangeLog.entityType);
+    
+    const changesByType = changesByTypeResult.reduce((acc, item) => {
+      acc[item.entityType] = item.count;
+      return acc;
+    }, {} as Record<string, number>);
+    
+    // Get last 24 hours
+    const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const last24HoursResult = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(entityChangeLog)
+      .where(and(
+        eq(entityChangeLog.affectedUserId, userId),
+        gte(entityChangeLog.createdAt, twentyFourHoursAgo)
+      ));
+    
+    // Get last week
+    const oneWeekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const lastWeekResult = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(entityChangeLog)
+      .where(and(
+        eq(entityChangeLog.affectedUserId, userId),
+        gte(entityChangeLog.createdAt, oneWeekAgo)
+      ));
+    
+    return {
+      totalChanges: totalChanges[0]?.count || 0,
+      changesByType,
+      last24Hours: last24HoursResult[0]?.count || 0,
+      lastWeek: lastWeekResult[0]?.count || 0,
+    };
+  } catch (error) {
+    console.error('Error getting delta statistics:', error);
+    return {
+      totalChanges: 0,
+      changesByType: {},
+      last24Hours: 0,
+      lastWeek: 0,
+    };
+  }
+}
 
   /**
-   * Calculate adaptive polling interval based on activity
+   * Calculate adaptive polling interval
    */
-  private calculateAdaptivePollInterval(
+  private calculatePollInterval(
     changeCount: number,
     clientType: "web" | "mobile",
-    lastActiveAt: Date
+    lastActiveAt?: Date | null
   ): number {
-    const baseInterval = clientType === "mobile" ? 10000 : 5000; // Mobile polls less frequently
+    const baseInterval = clientType === "web" ? 5000 : 10000;
     const now = new Date();
     const timeSinceActive = now.getTime() - (lastActiveAt || now).getTime();
     const hoursInactive = timeSinceActive / (1000 * 60 * 60);
 
-    // High activity = faster polling
     if (changeCount > 5) return Math.max(baseInterval / 2, 2000);
     if (changeCount > 2) return baseInterval;
 
-    // Slow down for inactive users
-    if (hoursInactive > 4) return baseInterval * 4; // Every 20s for web, 40s for mobile
-    if (hoursInactive > 1) return baseInterval * 2; // Every 10s for web, 20s for mobile
+    if (hoursInactive > 4) return baseInterval * 4;
+    if (hoursInactive > 1) return baseInterval * 2;
 
     return baseInterval;
   }
@@ -407,9 +807,9 @@ export class DeltaTrackingService {
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - daysToKeep);
 
-    const deleted = await db
+    await db
       .delete(entityChangeLog)
-      .where(gte(entityChangeLog.createdAt, cutoffDate));
+      .where(sql`${entityChangeLog.createdAt} < ${cutoffDate.toISOString()}`);
 
     console.log(`🧹 Cleaned up delta records older than ${daysToKeep} days`);
   }

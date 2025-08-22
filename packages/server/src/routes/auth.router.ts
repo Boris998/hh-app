@@ -1,267 +1,461 @@
-// src/routes/auth.router.ts - FIXED with registration endpoint
+// src/routes/auth.router.ts - Corrected with new Zod schemas
+import { Hono } from "hono";
+import { zValidator } from "@hono/zod-validator";
+import { authenticateToken } from "../middleware/auth.js";
+import { authService } from "../services/auth.js";
+import { z } from "zod";
 
-import { Hono } from 'hono';
-import { zValidator } from '@hono/zod-validator';
-import { z } from 'zod';
-import bcrypt from 'bcryptjs';
-import { eq } from 'drizzle-orm';
-import { db } from '../db/client.js';
-import { users } from '../db/schema.js';
-import { SessionService } from '../auth/session.js';
-import { authenticateToken, type User } from '../middleware/auth.js';
+// Import updated Zod schemas
+import {
+  registerUserSchema,
+  loginUserSchema,
+  updateUserSchema,
+  selectUserSchema,
+  type RegisterUser,
+  type LoginUser,
+  type UpdateUser,
+  type User,
+} from "../db/zod.schema.js";
 
 export const authRouter = new Hono();
 
-// Validation schemas
-const RegisterSchema = z.object({
-  username: z.string().min(3, 'Username must be at least 3 characters').max(50),
-  email: z.string().email('Invalid email format'),
-  password: z.string().min(8, 'Password must be at least 8 characters'),
-  avatarUrl: z.string().url().optional()
+// Enhanced validation schemas for auth-specific operations
+const changePasswordSchema = z.object({
+  currentPassword: z.string().min(8, "Current password must be at least 8 characters"),
+  newPassword: z.string()
+    .min(8, "New password must be at least 8 characters")
+    .max(128, "Password too long")
+    .regex(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/, "Password must contain uppercase, lowercase, and number"),
 });
 
-const LoginSchema = z.object({
-  email: z.string().email('Invalid email format'),
-  password: z.string().min(1, 'Password is required')
+const searchUsersSchema = z.object({
+  searchTerm: z.string()
+    .min(2, "Search term must be at least 2 characters")
+    .max(100, "Search term too long"),
+  limit: z.number().int().min(1).max(100).default(20),
+  excludeConnected: z.boolean().default(false),
+  activityTypeId: z.string().uuid().optional(),
 });
 
-const RefreshSchema = z.object({
-  refreshToken: z.string().min(1, 'Refresh token is required')
+const refreshTokenSchema = z.object({
+  refreshToken: z.string().min(1, "Refresh token is required"),
 });
 
-// POST /auth/register - User registration
-authRouter.post('/register', zValidator('json', RegisterSchema), async (c) => {
-  const { username, email, password, avatarUrl } = c.req.valid('json');
-  
-  try {
-    console.log(`📝 Registration attempt for: ${username} (${email})`);
-    
-    // Check if user already exists
-    const existingUser = await db
-      .select()
-      .from(users)
-      .where(eq(users.email, email))
-      .limit(1);
-    
-    if (existingUser.length > 0) {
-      console.log(`❌ User already exists: ${email}`);
-      return c.json({ error: 'User with this email already exists' }, 409);
-    }
+const forgotPasswordSchema = z.object({
+  email: z.string().email("Invalid email format"),
+});
 
-    // Check if username is taken
-    const existingUsername = await db
-      .select()
-      .from(users)
-      .where(eq(users.username, username))
-      .limit(1);
-    
-    if (existingUsername.length > 0) {
-      console.log(`❌ Username already taken: ${username}`);
-      return c.json({ error: 'Username is already taken' }, 409);
-    }
-    
-    // Hash password
-    const passwordHash = await bcrypt.hash(password, 12);
-    
-    // Create new user
-    const [newUser] = await db
-      .insert(users)
-      .values({
-        username,
-        email,
-        passwordHash,
-        avatarUrl: avatarUrl || null,
-        role: 'user',
-      })
-      .returning();
-    
-    console.log(`✅ User created: ${newUser.username} (${newUser.id})`);
-    
-    // Create session tokens for immediate login
-    const tokens = await SessionService.createSession({
-      id: newUser.id,
-      email: newUser.email,
-      role: newUser.role
-    });
-    
-    return c.json({
-      status: 'success',
-      data: {
-        user: {
-          id: newUser.id,
-          publicId: newUser.publicId,
-          username: newUser.username,
-          email: newUser.email,
-          avatarUrl: newUser.avatarUrl,
-          role: newUser.role
+const resetPasswordSchema = z.object({
+  token: z.string().min(1, "Reset token is required"),
+  newPassword: z.string()
+    .min(8, "Password must be at least 8 characters")
+    .max(128, "Password too long")
+    .regex(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/, "Password must contain uppercase, lowercase, and number"),
+});
+
+// POST /auth/register - Register new user
+authRouter.post(
+  "/register",
+  zValidator('json', registerUserSchema),
+  async (c) => {
+    try {
+      const userData = c.req.valid('json');
+      
+      console.log(`🔐 Registration attempt for: ${userData.email}`);
+      
+      const result = await authService.register(userData);
+
+      if (!result.success) {
+        console.log(`❌ Registration failed: ${result.error}`);
+        return c.json({
+          success: false,
+          error: result.error,
+        }, 400);
+      }
+
+      console.log(`✅ User registered successfully: ${result.user?.username}`);
+      
+      return c.json({
+        success: true,
+        data: {
+          user: result.user,
+          token: result.token,
+          refreshToken: result.refreshToken,
         },
-        tokens
-      },
-      message: 'Registration successful'
-    }, 201);
-    
-  } catch (error) {
-    console.error('Registration error:', error);
-    return c.json({ error: 'Failed to create user account' }, 500);
-  }
-});
-
-// POST /auth/login
-authRouter.post('/login', zValidator('json', LoginSchema), async (c) => {
-  const { email, password } = c.req.valid('json');
-  
-  try {
-    console.log(`🔐 Login attempt for: ${email}`);
-    
-    // Validate user credentials against database
-    const user = await validateUserCredentials(email, password);
-    
-    if (!user) {
-      console.log(`❌ Invalid credentials for: ${email}`);
-      return c.json({ error: 'Invalid email or password' }, 401);
+        message: result.message,
+      }, 201);
+    } catch (error) {
+      console.error("Registration error:", error);
+      
+      if (error instanceof z.ZodError) {
+        return c.json({
+          success: false,
+          error: "Invalid input data",
+          details: error.errors.map(err => ({
+            field: err.path.join('.'),
+            message: err.message
+          }))
+        }, 400);
+      }
+      
+      return c.json({
+        success: false,
+        error: "Registration failed",
+      }, 500);
     }
-    
-    console.log(`✅ User validated: ${user.username} (${user.email})`);
-    
-    const tokens = await SessionService.createSession({
-      id: user.id,
-      email: user.email,
-      role: user.role
-    });
-    
-    return c.json({
-      status: 'success',
-      data: {
-        user: { 
-          id: user.id, 
-          publicId: user.publicId,
-          email: user.email, 
-          username: user.username,
-          avatarUrl: user.avatarUrl,
-          role: user.role
+  }
+);
+
+// POST /auth/login - Login user
+authRouter.post(
+  "/login",
+  zValidator('json', loginUserSchema),
+  async (c) => {
+    try {
+      const credentials = c.req.valid('json');
+      
+      console.log(`🔐 Login attempt for: ${credentials.email}`);
+      
+      const result = await authService.login(credentials);
+
+      if (!result.success) {
+        console.log(`❌ Login failed for ${credentials.email}: ${result.error}`);
+        return c.json({
+          success: false,
+          error: result.error,
+        }, 401);
+      }
+
+      console.log(`✅ User logged in successfully: ${result.user?.username}`);
+      
+      return c.json({
+        success: true,
+        data: {
+          user: result.user,
+          token: result.token,
+          refreshToken: result.refreshToken,
+          expiresIn: result.expiresIn || 3600,
         },
-        tokens
-      },
-      message: 'Login successful'
-    });
-  } catch (error) {
-    console.error('Login error:', error);
-    return c.json({ error: 'Failed to process login request' }, 500);
-  }
-});
-
-// POST /auth/refresh
-authRouter.post('/refresh', zValidator('json', RefreshSchema), async (c) => {
-  const { refreshToken } = c.req.valid('json');
-  
-  try {
-    const newTokens = await SessionService.refreshSession(refreshToken);
-    
-    if (!newTokens) {
-      return c.json({ error: 'Invalid or expired refresh token' }, 401);
+        message: result.message,
+      });
+    } catch (error) {
+      console.error("Login error:", error);
+      
+      if (error instanceof z.ZodError) {
+        return c.json({
+          success: false,
+          error: "Invalid credentials format",
+          details: error.errors.map(err => ({
+            field: err.path.join('.'),
+            message: err.message
+          }))
+        }, 400);
+      }
+      
+      return c.json({
+        success: false,
+        error: "Login failed",
+      }, 500);
     }
-    
-    return c.json({
-      status: 'success',
-      data: { tokens: newTokens },
-      message: 'Tokens refreshed'
-    });
-  } catch (error) {
-    console.error('Token refresh error:', error);
-    return c.json({ error: 'Failed to refresh tokens' }, 500);
   }
-});
+);
 
-// POST /auth/logout
-authRouter.post('/logout', authenticateToken, async (c) => {
-  try {
-    const user = c.get('user') as User;
-    await SessionService.revokeRefreshToken(user.id);
-    
-    return c.json({
-      status: 'success',
-      message: 'Logged out successfully'
-    });
-  } catch (error) {
-    console.error('Logout error:', error);
-    return c.json({ error: 'Failed to logout' }, 500);
+// POST /auth/refresh - Refresh access token
+authRouter.post(
+  "/refresh",
+  zValidator('json', refreshTokenSchema),
+  async (c) => {
+    try {
+      const { refreshToken } = c.req.valid('json');
+      
+      console.log(`🔄 Token refresh attempt`);
+      
+      const result = await authService.refreshToken(refreshToken);
+
+      if (!result.success) {
+        console.log(`❌ Token refresh failed: ${result.error}`);
+        return c.json({
+          success: false,
+          error: result.error,
+        }, 401);
+      }
+
+      console.log(`✅ Token refreshed successfully for user: ${result.user?.username}`);
+      
+      return c.json({
+        success: true,
+        data: {
+          user: result.user,
+          token: result.token,
+          refreshToken: result.refreshToken,
+          expiresIn: result.expiresIn || 3600,
+        },
+      });
+    } catch (error) {
+      console.error("Token refresh error:", error);
+      return c.json({
+        success: false,
+        error: "Token refresh failed",
+      }, 500);
+    }
   }
-});
+);
 
-// GET /auth/me
+// Add this to your auth.router.ts
 authRouter.get('/me', authenticateToken, async (c) => {
   try {
-    const user = c.get('user') as User;
+    const user = c.get('user');
     
+    if (!user) {
+      return c.json({
+        success: false,
+        error: 'User not found'
+      }, 401);
+    }
+
+    console.log(`👤 Getting user info for: ${user.username}`);
+
+    // Return user info without sensitive data
     return c.json({
-      status: 'success',
+      success: true,
       data: {
         user: {
           id: user.id,
           publicId: user.publicId,
-          email: user.email,
           username: user.username,
+          email: user.email,
           avatarUrl: user.avatarUrl,
           role: user.role,
-          createdAt: user.createdAt,
-          updatedAt: user.updatedAt
+          createdAt: user.createdAt?.toISOString(),
+          updatedAt: user.updatedAt?.toISOString(),
         }
       }
     });
   } catch (error) {
-    console.error('Get user profile error:', error);
-    return c.json({ error: 'Failed to fetch user profile' }, 500);
+    console.error('Error getting user info:', error);
+    return c.json({
+      success: false,
+      error: 'Failed to get user information'
+    }, 500);
   }
 });
 
-// REAL user validation function
-async function validateUserCredentials(email: string, password: string): Promise<User | null> {
-  try {
-    console.log(`🔍 Looking up user: ${email}`);
-    
-    // Get user from database
-    const [user] = await db
-      .select()
-      .from(users)
-      .where(eq(users.email, email))
-      .limit(1);
-    
-    if (!user) {
-      console.log(`❌ User not found: ${email}`);
-      return null;
+// PUT /auth/profile - Update user profile
+authRouter.put(
+  "/profile",
+  zValidator('json', updateUserSchema),
+  authenticateToken,
+  async (c) => {
+    try {
+      const user = c.get("user");
+      const updateData = c.req.valid('json');
+      
+      console.log(`📝 Profile update for user: ${user.username}`);
+      
+      const result = await authService.updateProfile(user.id, updateData);
+
+      if (!result.success) {
+        console.log(`❌ Profile update failed: ${result.error}`);
+        return c.json({
+          success: false,
+          error: result.error,
+        }, 400);
+      }
+
+      console.log(`✅ Profile updated successfully for: ${user.username}`);
+      
+      return c.json({
+        success: true,
+        data: {
+          user: result.user,
+        },
+        message: "Profile updated successfully",
+      });
+    } catch (error) {
+      console.error("Profile update error:", error);
+      
+      if (error instanceof z.ZodError) {
+        return c.json({
+          success: false,
+          error: "Invalid profile data",
+          details: error.errors.map(err => ({
+            field: err.path.join('.'),
+            message: err.message
+          }))
+        }, 400);
+      }
+      
+      return c.json({
+        success: false,
+        error: "Profile update failed",
+      }, 500);
     }
-    
-    console.log(`👤 Found user: ${user.username} (${user.email})`);
-    
-    // Verify password
-    if (!user.passwordHash) {
-      console.log(`❌ No password hash for user: ${email}`);
-      return null;
-    }
-    
-    const isPasswordValid = await bcrypt.compare(password, user.passwordHash);
-    
-    if (!isPasswordValid) {
-      console.log(`❌ Invalid password for: ${email}`);
-      return null;
-    }
-    
-    console.log(`✅ Password validated for: ${email}`);
-    
-    // Return user in the expected format
-    return {
-      id: user.id,
-      publicId: user.publicId,
-      email: user.email,
-      username: user.username,
-      avatarUrl: user.avatarUrl || undefined,
-      role: user.role,
-      createdAt: user.createdAt,
-      updatedAt: user.updatedAt
-    };
-    
-  } catch (error) {
-    console.error('Error validating user credentials:', error);
-    return null;
   }
-}
+);
+
+// POST /auth/change-password - Change user password
+authRouter.post(
+  "/change-password",
+  zValidator('json', changePasswordSchema),
+  authenticateToken,
+  async (c) => {
+    try {
+      const user = c.get("user");
+      const passwordData = c.req.valid('json');
+      
+      console.log(`🔐 Password change request for user: ${user.username}`);
+      
+      const result = await authService.changePassword(
+        user.id, 
+        passwordData.currentPassword, 
+        passwordData.newPassword
+      );
+
+      if (!result.success) {
+        console.log(`❌ Password change failed: ${result.error}`);
+        return c.json({
+          success: false,
+          error: result.error,
+        }, 400);
+      }
+
+      console.log(`✅ Password changed successfully for: ${user.username}`);
+      
+      return c.json({
+        success: true,
+        message: "Password changed successfully",
+      });
+    } catch (error) {
+      console.error("Password change error:", error);
+      return c.json({
+        success: false,
+        error: "Password change failed",
+      }, 500);
+    }
+  }
+);
+
+// GET /auth/search-users - Search for users
+authRouter.get(
+  "/search-users",
+  zValidator('query', searchUsersSchema),
+  authenticateToken,
+  async (c) => {
+    try {
+      const user = c.get("user");
+      const searchParams = c.req.valid('query');
+      
+      console.log(`🔍 User search by ${user.username}: "${searchParams.searchTerm}"`);
+      
+      const result = await authService.searchUsers(user.id, searchParams);
+
+      if (!result.success) {
+        return c.json({
+          success: false,
+          error: result.error,
+        }, 400);
+      }
+
+      return c.json({
+        success: true,
+        data: {
+          users: result.users,
+          totalCount: result.totalCount,
+          hasMore: result.hasMore,
+        },
+      });
+    } catch (error) {
+      console.error("User search error:", error);
+      return c.json({
+        success: false,
+        error: "User search failed",
+      }, 500);
+    }
+  }
+);
+
+// POST /auth/logout - Logout user
+authRouter.post("/logout", authenticateToken, async (c) => {
+  try {
+    const user = c.get("user");
+    
+    console.log(`👋 Logout request for user: ${user.username}`);
+    
+    console.log(`✅ User logged out successfully: ${user.username}`);
+    
+    return c.json({
+      success: true,
+      message: "Logged out successfully",
+    });
+  } catch (error) {
+    console.error("Logout error:", error);
+    return c.json({
+      success: false,
+      error: "Logout failed",
+    }, 500);
+  }
+});
+
+// POST /auth/forgot-password - Request password reset
+authRouter.post(
+  "/forgot-password",
+  zValidator('json', forgotPasswordSchema),
+  async (c) => {
+    try {
+      const { email } = c.req.valid('json');
+      
+      console.log(`🔐 Password reset request for: ${email}`);
+      
+      const result = await authService.requestPasswordReset(email);
+
+      return c.json({
+        success: true,
+        message: "If the email exists, a password reset link has been sent",
+      });
+    } catch (error) {
+      console.error("Password reset request error:", error);
+      return c.json({
+        success: true,
+        message: "If the email exists, a password reset link has been sent",
+      });
+    }
+  }
+);
+
+// POST /auth/reset-password - Reset password with token
+authRouter.post(
+  "/reset-password",
+  zValidator('json', resetPasswordSchema),
+  async (c) => {
+    try {
+      const { token, newPassword } = c.req.valid('json');
+      
+      console.log(`🔐 Password reset attempt with token`);
+      
+      const result = await authService.resetPassword(token, newPassword);
+
+      if (!result.success) {
+        console.log(`❌ Password reset failed: ${result.error}`);
+        return c.json({
+          success: false,
+          error: result.error,
+        }, 400);
+      }
+
+      console.log(`✅ Password reset successfully`);
+      
+      return c.json({
+        success: true,
+        message: "Password reset successfully",
+      });
+    } catch (error) {
+      console.error("Password reset error:", error);
+      return c.json({
+        success: false,
+        error: "Password reset failed",
+      }, 500);
+    }
+  }
+);
+
+export default authRouter;

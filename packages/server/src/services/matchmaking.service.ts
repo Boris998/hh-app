@@ -1,613 +1,413 @@
-// src/services/matchmaking.service.ts - Complete Implementation
-
+// src/services/matchmaking.service.ts - Complete implementation with zod validation
+import { and, count, eq, gte, inArray, lte, ne, or, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
 import {
   activities,
+  activityParticipants,
   activityTypes,
-  users,
   userActivityTypeELOs,
   userActivityTypeSkillSummaries,
-  activityParticipants,
   userConnections,
+  users,
 } from "../db/schema.js";
-import {
-  eq,
-  and,
-  inArray,
-  between,
-  desc,
-  asc,
-  count,
-  avg,
-  sql,
-} from "drizzle-orm";
+import { selectActivitySchema, selectUserSchema } from "../db/zod.schema.js";
+import { deltaTrackingService } from "./delta-tracking.service.js";
+import type { TeamBalanceParams, TeamBalanceResult } from "./interfaces.js";
 
-// Types for matchmaking system
-export interface MatchmakingCriteria {
+export interface MatchmakingRequest {
+  userId: string;
   activityTypeId: string;
-  userELO: number;
-  eloTolerance?: number;
-  skillRequirements?: Record<string, { min: number; weight: number }>;
-  maxParticipants?: number;
-  preferredLocation?: string;
-  timeRange?: {
-    startDate: Date;
-    endDate: Date;
-  };
+  maxELODifference?: number;
+  preferredSkillLevel?: number;
   includeConnections?: boolean;
-  avoidRecentOpponents?: boolean;
+  excludeUserIds?: string[];
+  maxResults?: number;
 }
 
-export interface PlayerRecommendation {
+export interface MatchmakingResult {
   userId: string;
   username: string;
-  avatarUrl?: string;
-  currentELO: number;
-  eloCompatibility: number;
-  skillCompatibility: number;
-  socialCompatibility: number;
-  overallScore: number;
-  estimatedELOChange: {
-    ifWin: number;
-    ifLoss: number;
-    ifDraw: number;
-  };
-  lastPlayedTogether?: Date;
-  connectionType?: "friend" | "recent_opponent" | "new";
-  skillHighlights: Array<{
-    skillName: string;
-    rating: number;
-    meetsRequirement: boolean;
-  }>;
+  avatarUrl: string | null;
+  eloScore: number;
+  skillLevel: number;
+  compatibility: number;
+  connectionStatus: "none" | "pending" | "accepted";
+  lastActiveAt: Date | null;
+  gamesPlayed: number;
+  reasons: string[];
 }
 
-export interface ActivityRecommendation {
+export interface ActivityMatchmakingRequest {
   activityId: string;
-  description: string;
-  location?: string;
-  dateTime: Date;
-  participantCount: number;
-  maxParticipants?: number;
-  activityType: {
-    id: string;
-    name: string;
-    category: string;
-  };
-  eloLevel: number;
-  eloCompatibility: number;
-  skillMatch: number;
-  openSpots: number;
-  estimatedWaitTime?: number;
-  participants: Array<{
-    userId: string;
-    username: string;
-    elo: number;
-  }>;
+  maxSuggestions?: number;
+  eloRange?: number;
+  skillRange?: number;
 }
 
-export interface TeamBalancingResult {
-  teams: Array<{
-    name: string;
-    players: Array<{
-      userId: string;
-      username: string;
-      elo: number;
-      skills: Record<string, number>;
-    }>;
-    averageELO: number;
-    skillBalance: Record<string, number>;
-  }>;
-  balanceScore: number;
-  recommendations: string[];
-}
-
-export interface OptimizedActivityResult {
-  activityId: string;
-  suggestedELOLevel: number;
-  estimatedParticipants: number;
-  difficultyTier: "beginner" | "intermediate" | "advanced" | "expert";
-}
-
-export interface PersonalizedFeed {
-  recommendedActivities: ActivityRecommendation[];
-  friendsActivities: Array<{
+export interface ActivityMatchmakingResult {
+  suggestedUsers: MatchmakingResult[];
+  activityInfo: {
     activityId: string;
     description: string;
-    friendName: string;
-    activityType: string;
-    dateTime: Date;
-  }>;
-  trendingActivities: Array<{
-    activityTypeId: string;
-    activityTypeName: string;
-    activeActivities: number;
-    avgELOLevel: number;
-  }>;
-}
-
-export interface MatchmakingStatistics {
-  totalActivitiesCreated: number;
-  activitiesWithOptimalBalance: number;
-  averageParticipantsPerActivity: number;
-  mostPopularActivityTypes: Array<{
-    name: string;
-    activityCount: number;
-    avgELOLevel: number;
-  }>;
-  eloDistribution: Record<string, number>;
+    eloLevel: number | null;
+    currentParticipants: number;
+    maxParticipants: number | null;
+  };
 }
 
 export class MatchmakingService {
   /**
-   * Find recommended players for a user based on ELO and skills
+   * Find compatible players for a user
    */
-  async findRecommendedPlayers(
-    userId: string,
-    criteria: MatchmakingCriteria
-  ): Promise<PlayerRecommendation[]> {
-    console.log(
-      `🎯 Finding player recommendations for ${userId} in ${criteria.activityTypeId}`
-    );
+  async findCompatiblePlayers(
+    request: MatchmakingRequest
+  ): Promise<MatchmakingResult[]> {
+    try {
+      // Validate request user exists
+      const requestUser = await db.query.users.findFirst({
+        where: eq(users.id, request.userId),
+      });
 
-    const eloTolerance = criteria.eloTolerance || 200;
-
-    // Get potential players with ELO in range
-    const potentialPlayers = await db
-      .select({
-        user: users,
-        elo: userActivityTypeELOs,
-      })
-      .from(userActivityTypeELOs)
-      .leftJoin(users, eq(userActivityTypeELOs.userId, users.id))
-      .where(
-        and(
-          eq(userActivityTypeELOs.activityTypeId, criteria.activityTypeId),
-          between(
-            userActivityTypeELOs.eloScore,
-            criteria.userELO - eloTolerance,
-            criteria.userELO + eloTolerance
-          )
-        )
-      )
-      .orderBy(desc(userActivityTypeELOs.eloScore));
-
-    // Filter out the requesting user
-    const eligiblePlayers = potentialPlayers.filter(
-      (p) => p.user?.id !== userId
-    );
-
-    // Get social connections
-    const connections = await this.getUserConnections(userId);
-    const connectionUserIds = new Set(
-      connections.map((c) => c.connectedUserId)
-    );
-
-    // Get recent opponents
-    const recentOpponents = await this.getRecentOpponents(
-      userId,
-      criteria.activityTypeId,
-      30
-    );
-    const recentOpponentIds = new Set(recentOpponents.map((o) => o.opponentId));
-
-    // Calculate recommendations
-    const recommendations: PlayerRecommendation[] = [];
-
-    for (const player of eligiblePlayers) {
-      if (!player.user || !player.elo) continue;
-
-      const playerELO = player.elo.eloScore;
-
-      // Calculate ELO compatibility
-      const eloDifference = Math.abs(playerELO - criteria.userELO);
-      const eloCompatibility = Math.max(
-        0,
-        100 - (eloDifference / eloTolerance) * 100
-      );
-
-      // Calculate social compatibility
-      let socialCompatibility = 50;
-      let connectionType: PlayerRecommendation["connectionType"] = "new";
-
-      if (connectionUserIds.has(player.user.id)) {
-        socialCompatibility = 90;
-        connectionType = "friend";
-      } else if (recentOpponentIds.has(player.user.id)) {
-        socialCompatibility = criteria.avoidRecentOpponents ? 20 : 70;
-        connectionType = "recent_opponent";
+      if (!requestUser) {
+        throw new Error("Requesting user not found");
       }
 
-      // Calculate overall score
-      const skillCompatibility = 75; // Simplified for now
-      const overallScore =
-        eloCompatibility * 0.5 +
-        skillCompatibility * 0.3 +
-        socialCompatibility * 0.2;
+      const validatedUser = selectUserSchema.parse(requestUser);
 
-      // Estimate ELO changes
-      const estimatedELOChange = this.estimateELOChanges(
-        criteria.userELO,
-        playerELO,
-        32
+      // Get user's current ELO for the activity type
+      const userELO = await db.query.userActivityTypeELOs.findFirst({
+        where: and(
+          eq(userActivityTypeELOs.userId, request.userId),
+          eq(userActivityTypeELOs.activityTypeId, request.activityTypeId)
+        ),
+      });
+
+      const baseELO = userELO?.eloScore || 1200;
+      const maxELODiff = request.maxELODifference || 200;
+
+      // Get user's connections for prioritization
+      const userConnections = await this.getUserConnections(request.userId);
+
+      // Build candidate query
+      const candidates = await this.getCandidateUsers(
+        request,
+        baseELO,
+        maxELODiff
       );
 
-      recommendations.push({
-        userId: player.user.id,
-        username: player.user.username,
-        avatarUrl: player.user.avatarUrl || undefined,
-        currentELO: playerELO,
-        eloCompatibility: Math.round(eloCompatibility),
-        skillCompatibility: Math.round(skillCompatibility),
-        socialCompatibility: Math.round(socialCompatibility),
-        overallScore: Math.round(overallScore),
-        estimatedELOChange,
-        connectionType,
-        skillHighlights: [], // Simplified
-      });
-    }
+      // Calculate compatibility scores
+      const results = await this.calculateCompatibility(
+        request,
+        candidates,
+        userConnections,
+        baseELO
+      );
 
-    return recommendations
-      .sort((a, b) => b.overallScore - a.overallScore)
-      .slice(0, criteria.maxParticipants || 10);
+      // Sort by compatibility and return top results
+      const maxResults = request.maxResults || 20;
+      const sortedResults = results
+        .sort((a, b) => b.compatibility - a.compatibility)
+        .slice(0, maxResults);
+
+      // Track matchmaking request for analytics
+      await this.trackMatchmakingRequest(request, sortedResults.length);
+
+      return sortedResults;
+    } catch (error) {
+      console.error("Error in matchmaking:", error);
+      throw error;
+    }
   }
 
   /**
-   * Find recommended activities for a user to join
+   * Find suggested players for a specific activity
    */
-  async findRecommendedActivities(
-    userId: string,
-    activityTypeId?: string,
-    limit: number = 10
-  ): Promise<ActivityRecommendation[]> {
-    console.log(`🔍 Finding activity recommendations for user ${userId}`);
+  async suggestPlayersForActivity(
+    request: ActivityMatchmakingRequest
+  ): Promise<ActivityMatchmakingResult> {
+    try {
+      // Get activity details
+      const activity = await db.query.activities.findFirst({
+        where: eq(activities.id, request.activityId),
+      });
 
-    // Get user's ELO for activity types they play
-    const userELOsQuery = db
-      .select({
-        activityTypeId: userActivityTypeELOs.activityTypeId,
-        eloScore: userActivityTypeELOs.eloScore,
-      })
-      .from(userActivityTypeELOs)
-      .where(eq(userActivityTypeELOs.userId, userId));
-
-    const userELOs = await userELOsQuery;
-
-    if (userELOs.length === 0) {
-      return [];
-    }
-
-    // Build base query
-    const baseQuery = db
-      .select({
-        activity: activities,
-        activityType: activityTypes,
-        participantCount: count(activityParticipants.id),
-      })
-      .from(activities)
-      .leftJoin(activityTypes, eq(activities.activityTypeId, activityTypes.id))
-      .leftJoin(
-        activityParticipants,
-        and(
-          eq(activityParticipants.activityId, activities.id),
-          eq(activityParticipants.status, "accepted")
-        )
-      )
-      .groupBy(activities.id, activityTypes.id);
-
-    // Build where conditions
-    const whereConditions = [
-      eq(activities.completionStatus, "scheduled"),
-      sql`${activities.dateTime} > NOW()`,
-      sql`${activities.id} NOT IN (
-        SELECT activity_id FROM activity_participants 
-        WHERE user_id = ${userId} AND status = 'accepted'
-      )`,
-    ];
-
-    if (activityTypeId) {
-      whereConditions.push(eq(activities.activityTypeId, activityTypeId));
-    } else {
-      const userActivityTypeIds = userELOs.map((elo) => elo.activityTypeId);
-      if (userActivityTypeIds.length > 0) {
-        whereConditions.push(
-          inArray(activities.activityTypeId, userActivityTypeIds)
-        );
-      }
-    }
-
-    const availableActivities = await baseQuery
-      .where(and(...whereConditions))
-      .orderBy(asc(activities.dateTime))
-      .limit(limit * 3);
-
-    // Process recommendations
-    const recommendations: ActivityRecommendation[] = [];
-
-    for (const item of availableActivities) {
-      if (!item.activity || !item.activityType) continue;
-
-      const activity = item.activity;
-      const activityType = item.activityType;
-      const participantCount = item.participantCount || 0;
-
-      // Check if activity is full
-      if (
-        activity.maxParticipants &&
-        participantCount >= activity.maxParticipants
-      ) {
-        continue;
+      if (!activity) {
+        throw new Error("Activity not found");
       }
 
-      // Get user's ELO for this activity type
-      const userELO = userELOs.find(
-        (elo) => elo.activityTypeId === activity.activityTypeId
-      );
-      if (!userELO) continue;
+      const validatedActivity = selectActivitySchema.parse(activity);
 
-      // Calculate ELO compatibility
-      const activityELO = activity.eloLevel || 1200;
-      const eloDifference = Math.abs(userELO.eloScore - activityELO);
-      const eloCompatibility = Math.max(0, 100 - (eloDifference / 200) * 100);
-
-      // Get participants
-      const participants = await db
-        .select({
-          user: users,
-          elo: userActivityTypeELOs,
-        })
+      // Get current participants
+      const currentParticipants = await db
+        .select({ count: sql`count(*)` })
         .from(activityParticipants)
-        .leftJoin(users, eq(activityParticipants.userId, users.id))
-        .leftJoin(
-          userActivityTypeELOs,
-          and(
-            eq(userActivityTypeELOs.userId, activityParticipants.userId),
-            eq(userActivityTypeELOs.activityTypeId, activity.activityTypeId)
-          )
-        )
         .where(
           and(
-            eq(activityParticipants.activityId, activity.id),
+            eq(activityParticipants.activityId, request.activityId),
             eq(activityParticipants.status, "accepted")
           )
         );
 
-      const estimatedWaitTime = Math.max(
-        0,
-        Math.round((activity.dateTime.getTime() - Date.now()) / (1000 * 60))
+      const participantCount = Number(currentParticipants[0].count);
+
+      // Get existing participant IDs to exclude
+      const existingParticipants = await db
+        .select({ userId: activityParticipants.userId })
+        .from(activityParticipants)
+        .where(eq(activityParticipants.activityId, request.activityId));
+
+      const excludeUserIds = existingParticipants.map((p) => p.userId);
+
+      // Find compatible players
+      const matchmakingRequest: MatchmakingRequest = {
+        userId: validatedActivity.creatorId,
+        activityTypeId: validatedActivity.activityTypeId,
+        maxELODifference: request.eloRange || 300,
+        excludeUserIds,
+        maxResults: request.maxSuggestions || 10,
+      };
+
+      const suggestedUsers = await this.findCompatiblePlayers(
+        matchmakingRequest
       );
 
-      recommendations.push({
-        activityId: activity.id,
-        description: activity.description || "",
-        location: activity.location || undefined,
-        dateTime: activity.dateTime,
-        participantCount,
-        maxParticipants: activity.maxParticipants || undefined,
-        activityType: {
-          id: activityType.id,
-          name: activityType.name,
-          category: activityType.category,
+      return {
+        suggestedUsers,
+        activityInfo: {
+          activityId: request.activityId,
+          description: validatedActivity.description || "Activity",
+          eloLevel: validatedActivity.eloLevel,
+          currentParticipants: participantCount,
+          maxParticipants: validatedActivity.maxParticipants,
         },
-        eloLevel: activityELO,
-        eloCompatibility: Math.round(eloCompatibility),
-        skillMatch: 75,
-        openSpots: (activity.maxParticipants || 999) - participantCount,
-        estimatedWaitTime,
-        participants: participants.map((p) => ({
-          userId: p.user?.id || "",
-          username: p.user?.username || "Unknown",
-          elo: p.elo?.eloScore || 1200,
-        })),
-      });
+      };
+    } catch (error) {
+      console.error("Error suggesting players for activity:", error);
+      throw error;
     }
-
-    return recommendations
-      .sort((a, b) => b.eloCompatibility - a.eloCompatibility)
-      .slice(0, limit);
   }
 
   /**
-   * Create a new activity with optimal ELO targeting
+   * Get user's connections
    */
-  async createOptimizedActivity(
-    creatorId: string,
-    activityTypeId: string,
-    description: string,
-    location: string,
-    dateTime: Date,
-    maxParticipants: number
-  ): Promise<OptimizedActivityResult> {
-    console.log(`🎯 Creating optimized activity for ${creatorId}`);
-
-    // Get creator's ELO for this activity type
-    const [creatorELO] = await db
-      .select({ eloScore: userActivityTypeELOs.eloScore })
-      .from(userActivityTypeELOs)
+  private async getUserConnections(userId: string): Promise<Set<string>> {
+    const connections = await db
+      .select({
+        connectedUserId: sql`CASE 
+          WHEN ${userConnections.user1Id} = ${userId} THEN ${userConnections.user2Id}
+          ELSE ${userConnections.user1Id}
+        END`,
+        status: userConnections.status,
+      })
+      .from(userConnections)
       .where(
         and(
-          eq(userActivityTypeELOs.userId, creatorId),
-          eq(userActivityTypeELOs.activityTypeId, activityTypeId)
+          or(
+            eq(userConnections.user1Id, userId),
+            eq(userConnections.user2Id, userId)
+          ),
+          eq(userConnections.status, "accepted")
+        )
+      );
+
+    return new Set(connections.map((c) => c.connectedUserId as string));
+  }
+
+  /**
+   * Get candidate users within ELO range
+   */
+  private async getCandidateUsers(
+    request: MatchmakingRequest,
+    baseELO: number,
+    maxELODiff: number
+  ) {
+    const whereConditions = [
+      ne(users.id, request.userId), // Exclude requesting user
+    ];
+
+    if (request.excludeUserIds && request.excludeUserIds.length > 0) {
+      whereConditions.push(
+        sql`${users.id} NOT IN (${request.excludeUserIds.join(", ")})`
+      );
+    }
+
+    const candidates = await db
+      .select({
+        user: {
+          id: users.id,
+          username: users.username,
+          avatarUrl: users.avatarUrl,
+          createdAt: users.createdAt,
+        },
+        elo: {
+          eloScore: userActivityTypeELOs.eloScore,
+          gamesPlayed: userActivityTypeELOs.gamesPlayed,
+          lastUpdated: userActivityTypeELOs.lastUpdated,
+        },
+        skillLevel: sql<number>`COALESCE(AVG(CAST(${userActivityTypeSkillSummaries.averageRating} AS DECIMAL)), 5.0)`,
+      })
+      .from(users)
+      .leftJoin(
+        userActivityTypeELOs,
+        and(
+          eq(users.id, userActivityTypeELOs.userId),
+          eq(userActivityTypeELOs.activityTypeId, request.activityTypeId)
         )
       )
-      .limit(1);
-
-    const suggestedELOLevel = creatorELO?.eloScore || 1200;
-
-    // Determine difficulty tier
-    let difficultyTier: "beginner" | "intermediate" | "advanced" | "expert";
-    if (suggestedELOLevel < 1000) difficultyTier = "beginner";
-    else if (suggestedELOLevel < 1400) difficultyTier = "intermediate";
-    else if (suggestedELOLevel < 1800) difficultyTier = "advanced";
-    else difficultyTier = "expert";
-
-    // Estimate potential participants in ELO range
-    const eloTolerance = 200;
-    const [participantEstimate] = await db
-      .select({ count: count() })
-      .from(userActivityTypeELOs)
-      .where(
+      .leftJoin(
+        userActivityTypeSkillSummaries,
         and(
-          eq(userActivityTypeELOs.activityTypeId, activityTypeId),
-          between(
-            userActivityTypeELOs.eloScore,
-            suggestedELOLevel - eloTolerance,
-            suggestedELOLevel + eloTolerance
+          eq(users.id, userActivityTypeSkillSummaries.userId),
+          eq(
+            userActivityTypeSkillSummaries.activityTypeId,
+            request.activityTypeId
+          )
+        )
+      )
+      .where(and(...whereConditions))
+      .groupBy(
+        users.id,
+        users.username,
+        users.avatarUrl,
+        users.createdAt,
+        userActivityTypeELOs.eloScore,
+        userActivityTypeELOs.gamesPlayed,
+        userActivityTypeELOs.lastUpdated
+      )
+      .having(
+        and(
+          gte(
+            sql`COALESCE(${userActivityTypeELOs.eloScore}, 1200)`,
+            baseELO - maxELODiff
+          ),
+          lte(
+            sql`COALESCE(${userActivityTypeELOs.eloScore}, 1200)`,
+            baseELO + maxELODiff
           )
         )
       );
 
-    // Create the activity
-    const [newActivity] = await db
-      .insert(activities)
-      .values({
-        activityTypeId,
-        creatorId,
-        description,
-        location,
-        dateTime,
-        maxParticipants,
-        eloLevel: suggestedELOLevel,
-        isELORated: true,
-        completionStatus: "scheduled",
-      })
-      .returning({ id: activities.id });
-
-    // Auto-add creator as participant
-    await db.insert(activityParticipants).values({
-      activityId: newActivity.id,
-      userId: creatorId,
-      status: "accepted",
-    });
-
-    console.log(
-      `✅ Created optimized activity ${newActivity.id} at ELO level ${suggestedELOLevel}`
-    );
-
-    return {
-      activityId: newActivity.id,
-      suggestedELOLevel,
-      estimatedParticipants: participantEstimate?.count || 0,
-      difficultyTier,
-    };
+    return candidates;
   }
 
   /**
-   * Balance teams for an activity based on ELO and skills
+   * Calculate compatibility scores for candidates
    */
-  async balanceTeams(
-    activityId: string,
-    teamCount: number = 2
-  ): Promise<TeamBalancingResult> {
-    console.log(`⚖️  Balancing ${teamCount} teams for activity ${activityId}`);
+  private async calculateCompatibility(
+    request: MatchmakingRequest,
+    candidates: any[],
+    userConnections: Set<string>,
+    baseELO: number
+  ): Promise<MatchmakingResult[]> {
+    const results: MatchmakingResult[] = [];
 
-    // Get activity info
-    const [activity] = await db
-      .select()
-      .from(activities)
-      .where(eq(activities.id, activityId))
-      .limit(1);
+    for (const candidate of candidates) {
+      const candidateELO = candidate.elo?.eloScore || 1200;
+      const candidateSkillLevel = Number(candidate.skillLevel) || 5.0;
+      const gamesPlayed = candidate.elo?.gamesPlayed || 0;
 
-    if (!activity) {
-      throw new Error("Activity not found");
-    }
+      // Calculate compatibility factors
+      const eloSimilarity = this.calculateELOSimilarity(baseELO, candidateELO);
+      const experienceBonus = Math.min(gamesPlayed / 50, 1) * 10; // Up to 10 points for experience
+      const connectionBonus = userConnections.has(candidate.user.id) ? 20 : 0;
 
-    // Get participants
-    const participants = await db
-      .select({
-        user: users,
-        elo: userActivityTypeELOs,
-        participant: activityParticipants,
-      })
-      .from(activityParticipants)
-      .leftJoin(users, eq(activityParticipants.userId, users.id))
-      .leftJoin(
-        userActivityTypeELOs,
-        and(
-          eq(userActivityTypeELOs.userId, activityParticipants.userId),
-          eq(userActivityTypeELOs.activityTypeId, activity.activityTypeId)
-        )
-      )
-      .where(
-        and(
-          eq(activityParticipants.activityId, activityId),
-          eq(activityParticipants.status, "accepted")
-        )
+      // Skill level compatibility
+      const skillPreference = request.preferredSkillLevel || 5;
+      const skillSimilarity = Math.max(
+        0,
+        10 - Math.abs(candidateSkillLevel - skillPreference)
       );
 
-    if (participants.length < teamCount) {
-      throw new Error(
-        `Need at least ${teamCount} participants to balance teams`
+      // Calculate overall compatibility (0-100)
+      const compatibility = Math.min(
+        100,
+        eloSimilarity + experienceBonus + connectionBonus + skillSimilarity
       );
+
+      // Determine connection status
+      const connectionStatus = userConnections.has(candidate.user.id)
+        ? "accepted"
+        : "none";
+
+      // Generate reasons for the match
+      const reasons = this.generateMatchReasons(
+        eloSimilarity,
+        skillSimilarity,
+        connectionBonus,
+        experienceBonus
+      );
+
+      results.push({
+        userId: candidate.user.id,
+        username: candidate.user.username,
+        avatarUrl: candidate.user.avatarUrl,
+        eloScore: candidateELO,
+        skillLevel: candidateSkillLevel,
+        compatibility,
+        connectionStatus,
+        lastActiveAt: candidate.elo?.lastUpdated || candidate.user.createdAt,
+        gamesPlayed,
+        reasons,
+      });
     }
 
-    // Prepare player data
-    const players = participants.map((p) => ({
-      userId: p.user!.id,
-      username: p.user!.username,
-      elo: p.elo?.eloScore || 1200,
-      skills: {},
-    }));
-
-    // Distribute players into teams
-    const teams = this.distributePlayersIntoTeams(players, teamCount);
-
-    // Calculate balance score
-    const balanceScore = this.calculateTeamBalance(teams);
-
-    // Generate recommendations
-    const recommendations = this.generateBalancingRecommendations(
-      teams,
-      balanceScore
-    );
-
-    return {
-      teams: teams.map((team, index) => ({
-        name: String.fromCharCode(65 + index),
-        players: team,
-        averageELO: Math.round(
-          team.reduce((sum, p) => sum + p.elo, 0) / team.length
-        ),
-        skillBalance: {},
-      })),
-      balanceScore: Math.round(balanceScore),
-      recommendations,
-    };
+    return results;
   }
 
   /**
-   * Get personalized activity feed for a user
+   * Get activity recommendations for a user
    */
-  async getPersonalizedActivityFeed(
+  async getActivityRecommendations(
     userId: string,
-    limit: number = 20
-  ): Promise<PersonalizedFeed> {
-    console.log(`📱 Building personalized feed for user ${userId}`);
-
-    // Get recommended activities
-    const recommendedActivities = await this.findRecommendedActivities(
-      userId,
-      undefined,
-      limit
-    );
-
-    // Get friends' recent activities
-    const connections = await this.getUserConnections(userId);
-    const friendIds = connections.map((c) => c.connectedUserId);
-
-    let friendsActivities: Array<{
+    activityTypeId?: string,
+    maxResults: number = 10,
+    options: {
+      includeSkillMatch?: boolean;
+      includeTimePreference?: boolean;
+    } = {}
+  ): Promise<
+    Array<{
       activityId: string;
       description: string;
-      friendName: string;
-      activityType: string;
+      location: string;
       dateTime: Date;
-    }> = [];
-
-    if (friendIds.length > 0) {
-      const friendsRecentActivities = await db
+      maxParticipants: number;
+      currentParticipants: number;
+      activityTypeName: string;
+      creatorUsername: string;
+      matchScore: number;
+      eloMatch: boolean;
+      hasConnectedParticipants: boolean;
+      reasons: string[];
+    }>
+  > {
+    try {
+      // Get user's ELO scores for filtering
+      const userELOs = await db
         .select({
-          activity: activities,
-          activityType: activityTypes,
-          friend: users,
+          activityTypeId: userActivityTypeELOs.activityTypeId,
+          eloScore: userActivityTypeELOs.eloScore,
+        })
+        .from(userActivityTypeELOs)
+        .where(eq(userActivityTypeELOs.userId, userId));
+
+      const userELOMap = new Map(
+        userELOs.map((e) => [e.activityTypeId, e.eloScore])
+      );
+
+      // Build activities query
+      let activitiesQuery = db
+        .select({
+          activityId: activities.id,
+          description: activities.description,
+          location: activities.location,
+          dateTime: activities.dateTime,
+          maxParticipants: activities.maxParticipants,
+          eloLevel: activities.eloLevel,
+          activityTypeId: activities.activityTypeId,
+          activityTypeName: activityTypes.name,
+          creatorId: activities.creatorId,
+          creatorUsername: users.username,
         })
         .from(activities)
         .leftJoin(
@@ -617,302 +417,857 @@ export class MatchmakingService {
         .leftJoin(users, eq(activities.creatorId, users.id))
         .where(
           and(
-            inArray(activities.creatorId, friendIds),
-            eq(activities.completionStatus, "scheduled"),
-            sql`${activities.dateTime} > NOW()`
-          )
-        )
-        .orderBy(desc(activities.createdAt))
-        .limit(10);
-
-      friendsActivities = friendsRecentActivities.map((item) => ({
-        activityId: item.activity.id,
-        description: item.activity.description || "",
-        friendName: item.friend?.username || "Unknown",
-        activityType: item.activityType?.name || "Unknown",
-        dateTime: item.activity.dateTime,
-      }));
-    }
-
-    // Get trending activity types
-    const trendingActivities = await db
-      .select({
-        activityTypeId: activities.activityTypeId,
-        activityTypeName: activityTypes.name,
-        activeActivities: count(),
-        avgELOLevel: avg(activities.eloLevel),
-      })
-      .from(activities)
-      .leftJoin(activityTypes, eq(activities.activityTypeId, activityTypes.id))
-      .where(
-        and(
-          eq(activities.completionStatus, "scheduled"),
-          sql`${activities.dateTime} > NOW()`,
-          sql`${activities.dateTime} < NOW() + INTERVAL '7 days'`
-        )
-      )
-      .groupBy(activities.activityTypeId, activityTypes.name)
-      .orderBy(desc(count()))
-      .limit(5);
-
-    return {
-      recommendedActivities,
-      friendsActivities,
-      trendingActivities: trendingActivities.map((trend) => ({
-        activityTypeId: trend.activityTypeId,
-        activityTypeName: trend.activityTypeName || "Unknown",
-        activeActivities: trend.activeActivities,
-        avgELOLevel: Math.round(Number(trend.avgELOLevel) || 1200),
-      })),
-    };
-  }
-
-  /**
-   * Get matchmaking statistics for monitoring
-   */
-  async getMatchmakingStatistics(): Promise<MatchmakingStatistics> {
-    console.log("📊 Generating matchmaking statistics...");
-
-    // Total activities created
-    const [totalActivities] = await db
-      .select({ count: count() })
-      .from(activities);
-
-    // Activities with good participant counts
-    const [wellBalancedActivities] = await db
-      .select({ count: count() })
-      .from(activities)
-      .leftJoin(
-        activityParticipants,
-        eq(activities.id, activityParticipants.activityId)
-      )
-      .where(eq(activities.completionStatus, "completed"))
-      .having(sql`COUNT(${activityParticipants.id}) >= 4`);
-
-    // Average participants per activity
-    const [avgParticipants] = await db
-      .select({
-        avgParticipants: avg(sql<number>`(
-          SELECT COUNT(*) FROM activity_participants 
-          WHERE activity_id = ${activities.id} AND status = 'accepted'
-        )`),
-      })
-      .from(activities)
-      .where(eq(activities.completionStatus, "completed"));
-
-    // Most popular activity types
-    const popularActivityTypes = await db
-      .select({
-        name: activityTypes.name,
-        activityCount: count(),
-        avgELOLevel: avg(activities.eloLevel),
-      })
-      .from(activities)
-      .leftJoin(activityTypes, eq(activities.activityTypeId, activityTypes.id))
-      .groupBy(activityTypes.name)
-      .orderBy(desc(count()))
-      .limit(10);
-
-    // ELO distribution
-    const eloRanges = [
-      { min: 0, max: 999, label: "0-999" },
-      { min: 1000, max: 1199, label: "1000-1199" },
-      { min: 1200, max: 1399, label: "1200-1399" },
-      { min: 1400, max: 1599, label: "1400-1599" },
-      { min: 1600, max: 1799, label: "1600-1799" },
-      { min: 1800, max: 2099, label: "1800-2099" },
-      { min: 2100, max: 9999, label: "2100+" },
-    ];
-
-    const eloDistribution: Record<string, number> = {};
-
-    for (const range of eloRanges) {
-      const [result] = await db
-        .select({ count: count() })
-        .from(userActivityTypeELOs)
-        .where(
-          and(
-            sql`${userActivityTypeELOs.eloScore} >= ${range.min}`,
-            sql`${userActivityTypeELOs.eloScore} <= ${range.max}`
+            sql`${activities.dateTime} > NOW()`, // Only future activities
+            ne(activities.creatorId, userId), // Not created by user
+            // Check if user is not already a participant
+            sql`${activities.id} NOT IN (
+            SELECT activity_id FROM ${activityParticipants} 
+            WHERE user_id = ${userId}
+          )`
           )
         );
 
-      eloDistribution[range.label] = result?.count || 0;
-      console.log(eloDistribution[range.label]);
-    }
+      const whereConditions = [
+        sql`${activities.dateTime} > NOW()`, // Only future activities
+        ne(activities.creatorId, userId), // Not created by user
+        // Check if user is not already a participant
+        sql`${activities.id} NOT IN (
+        SELECT activity_id FROM ${activityParticipants} 
+        WHERE user_id = ${userId}
+      )`,
+      ];
 
-    return {
-      totalActivitiesCreated: totalActivities?.count || 0,
-      activitiesWithOptimalBalance: wellBalancedActivities?.count || 0,
-      averageParticipantsPerActivity:
-        Number(avgParticipants?.avgParticipants) || 0,
-      mostPopularActivityTypes: popularActivityTypes.map((type) => ({
-        name: type.name || "Unknown",
-        activityCount: type.activityCount,
-        avgELOLevel: Math.round(Number(type.avgELOLevel) || 1200),
-      })),
-      eloDistribution,
-    };
-  }
+      if (activityTypeId) {
+        whereConditions.push(eq(activities.activityTypeId, activityTypeId));
+      } else {
+        // Only include activity types where user has ELO rating
+        const userActivityTypeIds = Array.from(userELOMap.keys());
+        if (userActivityTypeIds.length > 0) {
+          whereConditions.push(
+            inArray(activities.activityTypeId, userActivityTypeIds)
+          );
+        }
+      }
 
-  /**
-   * Get user's social connections
-   */
-  public async getUserConnections(
-    userId: string
-  ): Promise<Array<{ connectedUserId: string }>> {
-    const connections = await db
-      .select({
-        connectedUserId: sql<string>`CASE 
+      const candidateActivities = await activitiesQuery.limit(50);
+
+      if (candidateActivities.length === 0) {
+        return [];
+      }
+
+      // Get participant counts and connected participants
+      const activityIds = candidateActivities.map((a) => a.activityId);
+
+      const participantCounts = await db
+        .select({
+          activityId: activityParticipants.activityId,
+          count: count(activityParticipants.userId),
+        })
+        .from(activityParticipants)
+        .where(
+          and(
+            inArray(activityParticipants.activityId, activityIds),
+            eq(activityParticipants.status, "accepted")
+          )
+        )
+        .groupBy(activityParticipants.activityId);
+
+      const participantCountMap = new Map(
+        participantCounts.map((p) => [p.activityId, p.count])
+      );
+
+      // Get user's connections for friendship bonus
+      const userConnectionsRes = await db
+        .select({
+          connectedUserId: sql<string>`CASE 
           WHEN ${userConnections.user1Id} = ${userId} THEN ${userConnections.user2Id}
           ELSE ${userConnections.user1Id}
         END`,
-      })
-      .from(userConnections)
-      .where(
-        and(
-          eq(userConnections.status, "accepted"),
-          sql`(${userConnections.user1Id} = ${userId} OR ${userConnections.user2Id} = ${userId})`
-        )
+        })
+        .from(userConnections)
+        .where(
+          and(
+            or(
+              eq(userConnections.user1Id, userId),
+              eq(userConnections.user2Id, userId)
+            ),
+            eq(userConnections.status, "accepted")
+          )
+        );
+
+      const friendIds = new Set(
+        userConnectionsRes.map((c: any) => c.connectedUserId)
       );
 
-    return connections;
+      // Check for connected participants in activities
+      const connectedParticipants = await db
+        .select({
+          activityId: activityParticipants.activityId,
+          participantUserId: activityParticipants.userId,
+        })
+        .from(activityParticipants)
+        .where(
+          and(
+            inArray(activityParticipants.activityId, activityIds),
+            eq(activityParticipants.status, "accepted")
+          )
+        );
+
+      const activitiesWithFriends = new Set(
+        connectedParticipants
+          .filter((cp) => friendIds.has(cp.participantUserId))
+          .map((cp) => cp.activityId)
+      );
+
+      // Score activities
+      const scoredActivities = candidateActivities
+        .map((activity) => {
+          const userELO = userELOMap.get(activity.activityTypeId) || 1200;
+          const currentParticipants =
+            participantCountMap.get(activity.activityId) || 0;
+          const hasConnectedParticipants = activitiesWithFriends.has(
+            activity.activityId
+          );
+
+          const maxParticipants = activity.maxParticipants ?? Infinity; // Or a large number like 9999
+          const location = activity.location ?? "Location not specified"; // Or empty string ''
+          const activityTypeName =
+            activity.activityTypeName ?? "Unknown Activity Type";
+          const creatorUsername = activity.creatorUsername ?? "Unknown User";
+
+          // Calculate match score
+          let matchScore = 50; // Base score
+
+          // ELO matching
+          const eloMatch =
+            !activity.eloLevel || Math.abs(userELO - activity.eloLevel) <= 200;
+          if (eloMatch) {
+            matchScore += 25;
+          }
+
+          // Activity not full
+          if (currentParticipants < maxParticipants) {
+            matchScore += 15;
+          }
+
+          // Has connected participants
+          if (hasConnectedParticipants) {
+            matchScore += 20;
+          }
+
+          // Time preference (activities in next 7 days get bonus)
+          const daysUntil =
+            (activity.dateTime.getTime() - Date.now()) / (1000 * 60 * 60 * 24);
+          if (daysUntil <= 7) {
+            matchScore += 10;
+          }
+
+          // Capacity utilization (activities that are 25-75% full are preferred)
+          if (maxParticipants > 0 && maxParticipants !== Infinity) {
+            // Avoid division by zero or Infinity
+            const utilizationRate = currentParticipants / maxParticipants;
+            if (utilizationRate >= 0.25 && utilizationRate <= 0.75) {
+              matchScore += 10;
+            }
+          }
+
+          const reasons = [];
+          if (eloMatch) reasons.push("Good skill match");
+          if (hasConnectedParticipants) reasons.push("Friends participating");
+          if (daysUntil <= 7) reasons.push("Happening soon");
+          if (currentParticipants < maxParticipants)
+            reasons.push("Spots available");
+
+          return {
+            activityId: activity.activityId,
+            description: activity.description,
+            location: location,
+            dateTime: activity.dateTime,
+            maxParticipants: maxParticipants,
+            currentParticipants,
+            activityTypeName: activityTypeName,
+            creatorUsername: creatorUsername,
+            matchScore: Math.min(100, matchScore),
+            eloMatch,
+            hasConnectedParticipants,
+            reasons,
+          };
+        })
+        .sort((a, b) => b.matchScore - a.matchScore)
+        .slice(0, maxResults);
+
+      return scoredActivities;
+    } catch (error) {
+      console.error("Error getting activity recommendations:", error);
+      throw error;
+    }
   }
 
   /**
-   * Get recent opponents for a user
+   * Calculate compatibility between two players
    */
-  private async getRecentOpponents(
-    userId: string,
-    activityTypeId: string,
-    daysBack: number
-  ): Promise<Array<{ opponentId: string; lastPlayed: Date }>> {
-    const dateThreshold = new Date();
-    dateThreshold.setDate(dateThreshold.getDate() - daysBack);
-
-    const recentGames = await db
-      .select({
-        activityId: activities.id,
-        participantId: activityParticipants.userId,
-        completedAt: activities.updatedAt,
-      })
-      .from(activities)
-      .leftJoin(
-        activityParticipants,
-        eq(activities.id, activityParticipants.activityId)
-      )
-      .where(
-        and(
-          eq(activities.activityTypeId, activityTypeId),
-          eq(activities.completionStatus, "completed"),
-          sql`${activities.updatedAt} >= ${dateThreshold}`,
-          sql`${activities.id} IN (
-          SELECT activity_id FROM activity_participants 
-          WHERE user_id = ${userId} AND status = 'accepted'
-        )`,
-          sql`${activityParticipants.userId} IS NOT NULL`,
-          sql`${activityParticipants.userId} != ${userId}`
-        )
-      );
-
-    return recentGames.map((game) => ({
-      opponentId: game.participantId!, // Using non-null assertion since we filtered for it
-      lastPlayed: game.completedAt,
-    }));
-  }
-
-  /**
-   * Estimate ELO changes for different outcomes
-   */
-  public estimateELOChanges(
-    playerELO: number,
-    opponentELO: number,
-    kFactor: number
-  ) {
-    const expectedScore =
-      1 / (1 + Math.pow(10, (opponentELO - playerELO) / 400));
-
-    return {
-      ifWin: Math.round(kFactor * (1 - expectedScore)),
-      ifLoss: Math.round(kFactor * (0 - expectedScore)),
-      ifDraw: Math.round(kFactor * (0.5 - expectedScore)),
+  async calculatePlayerCompatibility(
+    userId1: string,
+    userId2: string,
+    activityTypeId: string
+  ): Promise<{
+    overallScore: number;
+    factors: {
+      eloCompatibility: number;
+      skillAlignment: number;
+      experienceMatch: number;
+      activityFrequency: number;
     };
+    recommendation: string;
+  }> {
+    try {
+      // Get ELO scores for both users
+      const [user1ELO, user2ELO] = await Promise.all([
+        db
+          .select({
+            eloScore: userActivityTypeELOs.eloScore,
+            gamesPlayed: userActivityTypeELOs.gamesPlayed,
+          })
+          .from(userActivityTypeELOs)
+          .where(
+            and(
+              eq(userActivityTypeELOs.userId, userId1),
+              eq(userActivityTypeELOs.activityTypeId, activityTypeId)
+            )
+          )
+          .limit(1),
+        db
+          .select({
+            eloScore: userActivityTypeELOs.eloScore,
+            gamesPlayed: userActivityTypeELOs.gamesPlayed,
+          })
+          .from(userActivityTypeELOs)
+          .where(
+            and(
+              eq(userActivityTypeELOs.userId, userId2),
+              eq(userActivityTypeELOs.activityTypeId, activityTypeId)
+            )
+          )
+          .limit(1),
+      ]);
+
+      if (!user1ELO[0] || !user2ELO[0]) {
+        throw new Error("ELO data not found for one or both users");
+      }
+
+      // Calculate ELO compatibility (closer = better)
+      const eloDifference = Math.abs(
+        user1ELO[0].eloScore - user2ELO[0].eloScore
+      );
+      const eloCompatibility = Math.max(0, 100 - eloDifference / 5); // 5 ELO = 1% penalty
+
+      // Calculate experience match
+      const avgGames = (user1ELO[0].gamesPlayed + user2ELO[0].gamesPlayed) / 2;
+      const gamesDifference = Math.abs(
+        user1ELO[0].gamesPlayed - user2ELO[0].gamesPlayed
+      );
+      const experienceMatch = Math.max(
+        0,
+        100 - (gamesDifference / Math.max(1, avgGames)) * 100
+      );
+
+      // Get skill summaries for both users
+      const [user1Skills, user2Skills] = await Promise.all([
+        db
+          .select({
+            skillDefinitionId: userActivityTypeSkillSummaries.skillDefinitionId,
+            averageRating: userActivityTypeSkillSummaries.averageRating,
+          })
+          .from(userActivityTypeSkillSummaries)
+          .where(
+            and(
+              eq(userActivityTypeSkillSummaries.userId, userId1),
+              eq(userActivityTypeSkillSummaries.activityTypeId, activityTypeId)
+            )
+          ),
+        db
+          .select({
+            skillDefinitionId: userActivityTypeSkillSummaries.skillDefinitionId,
+            averageRating: userActivityTypeSkillSummaries.averageRating,
+          })
+          .from(userActivityTypeSkillSummaries)
+          .where(
+            and(
+              eq(userActivityTypeSkillSummaries.userId, userId2),
+              eq(userActivityTypeSkillSummaries.activityTypeId, activityTypeId)
+            )
+          ),
+      ]);
+
+      // Calculate skill alignment
+      let skillAlignment = 50; // Default if no skill data
+      if (user1Skills.length > 0 && user2Skills.length > 0) {
+        const skillMap1 = new Map(
+          user1Skills.map((s) => [s.skillDefinitionId, s.averageRating ?? 0])
+        );
+        const skillMap2 = new Map(
+          user2Skills.map((s) => [s.skillDefinitionId, s.averageRating ?? 0])
+        );
+
+        const commonSkills = [...skillMap1.keys()].filter((id) =>
+          skillMap2.has(id)
+        );
+
+        if (commonSkills.length > 0) {
+          const skillDifferences = commonSkills.map((skillId) =>
+            Math.abs(
+              (skillMap1.get(skillId) ?? 0) - (skillMap2.get(skillId) ?? 0)
+            )
+          );
+          const avgSkillDifference =
+            skillDifferences.reduce((sum, diff) => sum + diff, 0) /
+            skillDifferences.length;
+          skillAlignment = Math.max(0, 100 - avgSkillDifference * 10); // 0.1 rating diff = 1% penalty
+        }
+      }
+
+      // Calculate activity frequency compatibility
+      const oneMonthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+      const [user1Activities, user2Activities] = await Promise.all([
+        db
+          .select({ count: count(activityParticipants.activityId) })
+          .from(activityParticipants)
+          .leftJoin(
+            activities,
+            eq(activityParticipants.activityId, activities.id)
+          )
+          .where(
+            and(
+              eq(activityParticipants.userId, userId1),
+              eq(activities.activityTypeId, activityTypeId),
+              sql`${activities.dateTime} >= ${oneMonthAgo}`
+            )
+          ),
+        db
+          .select({ count: count(activityParticipants.activityId) })
+          .from(activityParticipants)
+          .leftJoin(
+            activities,
+            eq(activityParticipants.activityId, activities.id)
+          )
+          .where(
+            and(
+              eq(activityParticipants.userId, userId2),
+              eq(activities.activityTypeId, activityTypeId),
+              sql`${activities.dateTime} >= ${oneMonthAgo}`
+            )
+          ),
+      ]);
+
+      const user1Frequency = user1Activities[0]?.count || 0;
+      const user2Frequency = user2Activities[0]?.count || 0;
+      const avgFrequency = (user1Frequency + user2Frequency) / 2;
+      const frequencyDifference = Math.abs(user1Frequency - user2Frequency);
+      const activityFrequency =
+        avgFrequency === 0
+          ? 50
+          : Math.max(
+              0,
+              100 - (frequencyDifference / Math.max(1, avgFrequency)) * 100
+            );
+
+      // Calculate overall score (weighted average)
+      const factors = {
+        eloCompatibility: Math.round(eloCompatibility),
+        skillAlignment: Math.round(skillAlignment),
+        experienceMatch: Math.round(experienceMatch),
+        activityFrequency: Math.round(activityFrequency),
+      };
+
+      const overallScore = Math.round(
+        eloCompatibility * 0.4 +
+          skillAlignment * 0.3 +
+          experienceMatch * 0.2 +
+          activityFrequency * 0.1
+      );
+
+      // Generate recommendation
+      let recommendation = "";
+      if (overallScore >= 85) {
+        recommendation =
+          "Excellent match! You and this player are very compatible for activities together.";
+      } else if (overallScore >= 70) {
+        recommendation =
+          "Good compatibility. You should work well together in most activities.";
+      } else if (overallScore >= 55) {
+        recommendation =
+          "Moderate compatibility. Some differences but still worth playing together.";
+      } else {
+        recommendation =
+          "Limited compatibility. Consider this for casual or learning activities.";
+      }
+
+      return {
+        overallScore,
+        factors,
+        recommendation,
+      };
+    } catch (error) {
+      console.error("Error calculating player compatibility:", error);
+      throw error;
+    }
+  }
+  /**
+   * Calculate ELO similarity score (0-40 points)
+   */
+  private calculateELOSimilarity(
+    baseELO: number,
+    candidateELO: number
+  ): number {
+    const difference = Math.abs(baseELO - candidateELO);
+    return Math.max(0, 40 - difference / 10); // Lose 1 point per 10 ELO difference
   }
 
-  // Helper methods
-  private distributePlayersIntoTeams(
-    players: Array<{
+  /**
+   * Generate human-readable reasons for the match
+   */
+  private generateMatchReasons(
+    eloSimilarity: number,
+    skillSimilarity: number,
+    connectionBonus: number,
+    experienceBonus: number
+  ): string[] {
+    const reasons: string[] = [];
+
+    if (eloSimilarity > 30) reasons.push("Similar skill level");
+    if (eloSimilarity > 20 && eloSimilarity <= 30)
+      reasons.push("Comparable skill level");
+    if (skillSimilarity > 7) reasons.push("Matching skill preferences");
+    if (connectionBonus > 0) reasons.push("Friend connection");
+    if (experienceBonus > 5) reasons.push("Experienced player");
+    if (experienceBonus <= 2) reasons.push("New player");
+
+    return reasons.length > 0 ? reasons : ["General compatibility"];
+  }
+
+  /**
+   * Track matchmaking request for analytics
+   */
+  private async trackMatchmakingRequest(
+    request: MatchmakingRequest,
+    resultsCount: number
+  ): Promise<void> {
+    try {
+      await deltaTrackingService.trackChange({
+        entityType: "matchmaking",
+        entityId: `${request.userId}-${request.activityTypeId}`,
+        changeType: "create",
+        newData: {
+          userId: request.userId,
+          activityTypeId: request.activityTypeId,
+          maxELODifference: request.maxELODifference,
+          resultsCount,
+          timestamp: new Date(),
+        },
+        affectedUserId: request.userId,
+        triggeredBy: request.userId,
+        changeSource: "matchmaking",
+      });
+    } catch (error) {
+      console.error("Failed to track matchmaking request:", error);
+    }
+  }
+
+  /**
+   * Find recommended players based on criteria
+   */
+  async findRecommendedPlayers(
+    userId: string,
+    criteria: {
+      activityTypeId: string;
+      userELO: number;
+      eloTolerance: number;
+      skillRequirements?: Record<string, { min: number; weight: number }>;
+      maxParticipants: number;
+      includeConnections: boolean;
+      avoidRecentOpponents: boolean;
+    }
+  ): Promise<
+    Array<{
       userId: string;
       username: string;
-      elo: number;
-      skills: Record<string, number>;
-    }>,
-    teamCount: number
-  ) {
-    const sortedPlayers = [...players].sort((a, b) => b.elo - a.elo);
-    const teams: Array<Array<(typeof players)[0]>> = [];
+      avatarUrl: string | null;
+      currentELO: number;
+      skillLevel: number;
+      overallScore: number;
+      connectionType: "friend" | "new";
+      lastActiveAt: Date | null;
+      gamesPlayed: number;
+      reasons: string[];
+    }>
+  > {
+    try {
+      // Calculate ELO range
+      const minELO = criteria.userELO - criteria.eloTolerance;
+      const maxELO = criteria.userELO + criteria.eloTolerance;
 
-    for (let i = 0; i < teamCount; i++) {
-      teams.push([]);
+      // Get users within ELO range for this activity type
+      let candidatesQuery = db
+        .select({
+          userId: userActivityTypeELOs.userId,
+          username: users.username,
+          avatarUrl: users.avatarUrl,
+          eloScore: userActivityTypeELOs.eloScore,
+          gamesPlayed: userActivityTypeELOs.gamesPlayed,
+          lastUpdated: userActivityTypeELOs.lastUpdated,
+        })
+        .from(userActivityTypeELOs)
+        .leftJoin(users, eq(userActivityTypeELOs.userId, users.id))
+        .where(
+          and(
+            eq(userActivityTypeELOs.activityTypeId, criteria.activityTypeId),
+            gte(userActivityTypeELOs.eloScore, minELO),
+            lte(userActivityTypeELOs.eloScore, maxELO),
+            ne(userActivityTypeELOs.userId, userId) // Exclude current user
+          )
+        );
+
+      const candidates = await candidatesQuery.limit(100); // Reasonable limit
+
+      if (candidates.length === 0) {
+        return [];
+      }
+
+      const validCandidates = candidates.filter(
+        (candidate) => candidate.username !== null
+      );
+
+      // Get connection statuses
+      const candidateIds = validCandidates.map((c) => c.userId);
+      const connections = await db
+        .select({
+          connectedUserId: sql<string>`CASE 
+          WHEN ${userConnections.user1Id} = ${userId} THEN ${userConnections.user2Id}
+          ELSE ${userConnections.user1Id}
+        END`,
+          status: userConnections.status,
+        })
+        .from(userConnections)
+        .where(
+          and(
+            or(
+              eq(userConnections.user1Id, userId),
+              eq(userConnections.user2Id, userId)
+            ),
+            inArray(
+              sql`CASE 
+              WHEN ${userConnections.user1Id} = ${userId} THEN ${userConnections.user2Id}
+              ELSE ${userConnections.user1Id}
+            END`,
+              candidateIds
+            )
+          )
+        );
+
+      const friendIds = new Set(
+        connections
+          .filter((c) => c.status === "accepted")
+          .map((c) => c.connectedUserId)
+      );
+
+      // Filter out connected users if not including them
+      let filteredCandidates = candidates;
+      if (!criteria.includeConnections) {
+        filteredCandidates = candidates.filter((c) => !friendIds.has(c.userId));
+      }
+
+      // Score and filter candidates
+      const scoredCandidates = filteredCandidates
+        .map((candidate) => {
+          const safeUsername = candidate.username ?? "UnknownUser";
+
+          const eloDifference = Math.abs(candidate.eloScore - criteria.userELO);
+          const eloScore = Math.max(
+            0,
+            100 - (eloDifference / criteria.eloTolerance) * 50
+          );
+
+          const experienceScore = Math.min(
+            100,
+            (candidate.gamesPlayed / 10) * 100
+          );
+
+          const connectionBonus = friendIds.has(candidate.userId) ? 20 : 0;
+
+          const activityBonus =
+            candidate.lastUpdated &&
+            Date.now() - candidate.lastUpdated.getTime() <
+              7 * 24 * 60 * 60 * 1000
+              ? 10
+              : 0;
+
+          const overallScore = Math.round(
+            eloScore * 0.5 +
+              experienceScore * 0.3 +
+              connectionBonus +
+              activityBonus
+          );
+
+          const reasons = [];
+          if (eloDifference <= 50) reasons.push("Similar skill level");
+          if (friendIds.has(candidate.userId)) reasons.push("Connected friend");
+          if (candidate.gamesPlayed >= 10) reasons.push("Experienced player");
+          if (activityBonus > 0) reasons.push("Recently active");
+
+          return {
+            userId: candidate.userId,
+            username: safeUsername,
+            avatarUrl: candidate.avatarUrl,
+            currentELO: candidate.eloScore,
+            skillLevel: Math.round(candidate.eloScore / 120), // Simplified skill level
+            overallScore,
+            connectionType: friendIds.has(candidate.userId)
+              ? ("friend" as const)
+              : ("new" as const),
+            lastActiveAt: candidate.lastUpdated,
+            gamesPlayed: candidate.gamesPlayed,
+            reasons,
+          };
+        })
+        .sort((a, b) => b.overallScore - a.overallScore)
+        .slice(0, criteria.maxParticipants);
+
+      return scoredCandidates;
+    } catch (error) {
+      console.error("Error finding recommended players:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get matchmaking statistics for a user
+   */
+  async getMatchmakingStats(userId: string, activityTypeId: string) {
+    try {
+      // Get recent matchmaking requests
+      const recentMatches = await db
+        .select({ count: sql`count(*)` })
+        .from(userActivityTypeELOs)
+        .where(eq(userActivityTypeELOs.userId, userId));
+
+      // Get user's current rank percentile
+      const userELO = await db.query.userActivityTypeELOs.findFirst({
+        where: and(
+          eq(userActivityTypeELOs.userId, userId),
+          eq(userActivityTypeELOs.activityTypeId, activityTypeId)
+        ),
+      });
+
+      if (!userELO) {
+        return {
+          eligiblePlayers: 0,
+          averageELODifference: 0,
+          recommendedELORange: 200,
+          rankPercentile: 50,
+        };
+      }
+
+      // Count players in similar ELO range
+      const eligiblePlayers = await db
+        .select({ count: sql`count(*)` })
+        .from(userActivityTypeELOs)
+        .where(
+          and(
+            eq(userActivityTypeELOs.activityTypeId, activityTypeId),
+            gte(userActivityTypeELOs.eloScore, userELO.eloScore - 300),
+            lte(userActivityTypeELOs.eloScore, userELO.eloScore + 300),
+            ne(userActivityTypeELOs.userId, userId)
+          )
+        );
+
+      return {
+        eligiblePlayers: Number(eligiblePlayers[0].count),
+        averageELODifference: 150,
+        recommendedELORange: 200,
+        rankPercentile: 50, // Simplified calculation
+      };
+    } catch (error) {
+      console.error("Error getting matchmaking stats:", error);
+      return {
+        eligiblePlayers: 0,
+        averageELODifference: 0,
+        recommendedELORange: 200,
+        rankPercentile: 50,
+      };
+    }
+  }
+
+  /**
+   * Create optimized activity with ELO targeting
+   */
+  async createOptimizedActivity(
+    creatorId: string,
+    activityTypeId: string,
+    description: string,
+    location: string,
+    dateTime: Date,
+    maxParticipants: number
+  ): Promise<{
+    activityId: string;
+    suggestedELOLevel: number;
+    difficultyTier: string;
+    estimatedParticipants: number;
+  }> {
+    try {
+      // Get creator's ELO for this activity type
+      const [creatorELO] = await db
+        .select({ eloScore: userActivityTypeELOs.eloScore })
+        .from(userActivityTypeELOs)
+        .where(
+          and(
+            eq(userActivityTypeELOs.userId, creatorId),
+            eq(userActivityTypeELOs.activityTypeId, activityTypeId)
+          )
+        )
+        .limit(1);
+
+      const suggestedELOLevel = creatorELO?.eloScore || 1200;
+
+      // Determine difficulty tier
+      const difficultyTier =
+        suggestedELOLevel >= 1600
+          ? "Expert"
+          : suggestedELOLevel >= 1400
+          ? "Advanced"
+          : suggestedELOLevel >= 1200
+          ? "Intermediate"
+          : "Beginner";
+
+      // Create the activity
+      const [newActivity] = await db
+        .insert(activities)
+        .values({
+          activityTypeId,
+          creatorId,
+          description,
+          location,
+          dateTime,
+          maxParticipants,
+          eloLevel: suggestedELOLevel,
+        })
+        .returning();
+
+      // Estimate potential participants within ELO range
+      const eloTolerance = 300; // Standard tolerance for estimation
+      const potentialParticipants = await db
+        .select({ count: count(userActivityTypeELOs.userId) })
+        .from(userActivityTypeELOs)
+        .where(
+          and(
+            eq(userActivityTypeELOs.activityTypeId, activityTypeId),
+            gte(
+              userActivityTypeELOs.eloScore,
+              suggestedELOLevel - eloTolerance
+            ),
+            lte(
+              userActivityTypeELOs.eloScore,
+              suggestedELOLevel + eloTolerance
+            ),
+            ne(userActivityTypeELOs.userId, creatorId) // Exclude creator
+          )
+        );
+
+      const estimatedParticipants = potentialParticipants[0]?.count || 0;
+
+      // Auto-join creator as participant
+      await db.insert(activityParticipants).values({
+        activityId: newActivity.id,
+        userId: creatorId,
+        status: "accepted",
+      });
+
+      return {
+        activityId: newActivity.id,
+        suggestedELOLevel,
+        difficultyTier,
+        estimatedParticipants,
+      };
+    } catch (error) {
+      console.error("Error creating optimized activity:", error);
+      throw error;
+    }
+  }
+
+  // Add the missing method to the existing MatchmakingService class
+
+  async balanceTeams(params: TeamBalanceParams): Promise<TeamBalanceResult> {
+    console.log(
+      `⚖️ Balancing teams for ${params.participants.length} participants`
+    );
+
+    if (params.participants.length < 2) {
+      return {
+        success: false,
+        teams: [],
+        metrics: { eloDifference: 0, balance: 0, fairness: "Poor" },
+        error: "Need at least 2 participants to balance teams",
+      };
     }
 
-    let currentTeam = 0;
-    let direction = 1;
+    // Simple team balancing algorithm
+    const teamA = [];
+    const teamB = [];
 
-    for (const player of sortedPlayers) {
-      teams[currentTeam].push(player);
+    // Sort participants by ELO and distribute alternately for balance
+    const sortedParticipants = [...params.participants].sort(
+      (a, b) => b.eloScore - a.eloScore
+    );
 
-      currentTeam += direction;
+    for (let i = 0; i < sortedParticipants.length; i++) {
+      const participant = sortedParticipants[i];
+      const teamMember = {
+        userId: participant.userId,
+        username: participant.username,
+        eloScore: participant.eloScore,
+      };
 
-      if (currentTeam === teamCount) {
-        currentTeam = teamCount - 1;
-        direction = -1;
-      } else if (currentTeam < 0) {
-        currentTeam = 0;
-        direction = 1;
+      if (i % 2 === 0) {
+        teamA.push(teamMember);
+      } else {
+        teamB.push(teamMember);
       }
     }
 
-    return teams;
-  }
+    const teamAAvg =
+      teamA.reduce((sum, p) => sum + p.eloScore, 0) / Math.max(teamA.length, 1);
+    const teamBAvg =
+      teamB.reduce((sum, p) => sum + p.eloScore, 0) / Math.max(teamB.length, 1);
+    const eloDifference = Math.abs(teamAAvg - teamBAvg);
 
-  private calculateTeamBalance(teams: Array<Array<{ elo: number }>>) {
-    if (teams.length < 2) return 100;
-
-    const teamELOs = teams.map(
-      (team) => team.reduce((sum, player) => sum + player.elo, 0) / team.length
-    );
-
-    const overallAvgELO =
-      teamELOs.reduce((sum, elo) => sum + elo, 0) / teamELOs.length;
-    const eloVariance =
-      teamELOs.reduce((sum, elo) => sum + Math.pow(elo - overallAvgELO, 2), 0) /
-      teamELOs.length;
-
-    return Math.max(0, 100 - eloVariance / 100);
-  }
-
-  private generateBalancingRecommendations(
-    teams: Array<Array<any>>,
-    balanceScore: number
-  ) {
-    const recommendations: string[] = [];
-
-    if (balanceScore < 70) {
-      recommendations.push(
-        "Teams are significantly unbalanced. Consider manual adjustments."
-      );
-    }
-
-    if (balanceScore > 90) {
-      recommendations.push("Excellent team balance! Teams are well-matched.");
-    } else if (balanceScore > 75) {
-      recommendations.push(
-        "Good team balance with minor improvements possible."
-      );
-    }
-
-    return recommendations;
+    return {
+      success: true,
+      teams: [
+        {
+          name: "A",
+          members: teamA,
+          averageELO: Math.round(teamAAvg),
+          totalELO: teamA.reduce((sum, p) => sum + p.eloScore, 0),
+        },
+        {
+          name: "B",
+          members: teamB,
+          averageELO: Math.round(teamBAvg),
+          totalELO: teamB.reduce((sum, p) => sum + p.eloScore, 0),
+        },
+      ],
+      metrics: {
+        eloDifference: Math.round(eloDifference),
+        balance: Math.max(0, 1 - eloDifference / 200), // Normalize to 0-1
+        fairness:
+          eloDifference < 50
+            ? "Excellent"
+            : eloDifference < 100
+            ? "Good"
+            : eloDifference < 200
+            ? "Fair"
+            : "Poor",
+      },
+    };
   }
 }
 

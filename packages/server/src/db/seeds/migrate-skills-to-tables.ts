@@ -19,6 +19,7 @@ const MOCK_USERS = [
   { username: 'emma_sport', email: 'emma@example.com', firstName: 'Emma', lastName: 'Davis' },
   { username: 'james_fit', email: 'james@example.com', firstName: 'James', lastName: 'Miller' },
   { username: 'lisa_active', email: 'lisa@example.com', firstName: 'Lisa', lastName: 'Taylor' },
+  { username: 'boris_tadirov', email: 'btadirov16@gmail.com', firstName: 'Boris', lastName: 'Tadirov' },
 ];
 
 export async function createMockData() {
@@ -44,7 +45,7 @@ export async function createMockData() {
     if (newUsers.length > 0) {
       console.log(`👥 Creating ${newUsers.length} new mock users...`);
       
-      const hashedPassword = await bcrypt.hash('password123', 10);
+      const hashedPassword = await bcrypt.hash('1_Pass@hH-app', 10);
       
       const mockUserData = newUsers.map(user => ({
         ...user,
@@ -146,7 +147,7 @@ export async function createMockData() {
       if (activitiesData.length > 0) {
         const insertedActivities = await db
           .insert(activities)
-          .values(activitiesData)
+          .values(activitiesData as any)
           .returning({ id: activities.id });
         
         console.log(`✅ Created ${insertedActivities.length} sample activities`);

@@ -1,539 +1,679 @@
-// src/routes/skill-rating.router.ts - Skill Rating API Endpoints
+// src/routes/skill-rating.router.ts - Complete implementation using existing service methods
 
-import { Hono } from "hono";
-import { zValidator } from "@hono/zod-validator";
-import { z } from "zod";
-import { eq, and, desc } from "drizzle-orm";
-import { db } from "../db/client.js";
+import { zValidator } from '@hono/zod-validator';
+import { and, desc, eq, or, sql } from 'drizzle-orm';
+import { Hono } from 'hono';
+import { z } from 'zod';
+import { db } from '../db/client.js';
 import {
+  activities,
+  activityParticipants,
+  activityTypes,
+  skillDefinitions,
   userActivitySkillRatings,
   userActivityTypeSkillSummaries,
-  skillDefinitions,
-  users,
-} from "../db/schema.js";
-import { authenticateToken } from "../middleware/auth.js";
-import { skillRatingService } from "../services/skill-raiting.service.js";
+  userConnections
+} from '../db/schema.js';
+import { authenticateToken } from '../middleware/auth.js';
+import { deltaTrackingService } from '../services/delta-tracking.service.js';
+import { skillRatingService } from '../services/skill-raiting.service.js';
 
 export const skillRatingRouter = new Hono();
 
-// Request schemas
-const submitSkillRatingsSchema = z.object({
-  activityId: z.string().uuid("Invalid activity ID"),
-  ratedUserId: z.string().uuid("Invalid user ID"),
-  ratings: z
-    .array(
-      z.object({
-        skillDefinitionId: z.string().uuid("Invalid skill ID"),
-        ratingValue: z
-          .number()
-          .int()
-          .min(1)
-          .max(10, "Rating must be between 1-10"),
-        confidence: z
-          .number()
-          .int()
-          .min(1)
-          .max(5, "Confidence must be between 1-5"),
-        comment: z.string().max(500, "Comment too long").optional(),
-      })
-    )
-    .min(1, "At least one rating required")
-    .max(20, "Too many ratings"),
+// Validation schemas
+const submitRatingSchema = z.object({
+  activityId: z.string().uuid('Invalid activity ID'),
+  ratedUserId: z.string().uuid('Invalid rated user ID'),
+  skillDefinitionId: z.string().uuid('Invalid skill definition ID'),
+  ratingValue: z.number().int().min(1).max(10),
+  comment: z.string().max(500, 'Comment too long').optional(),
+  confidence: z.number().min(1).max(10).optional(),
   isAnonymous: z.boolean().default(false),
 });
 
-const getUserSkillsQuerySchema = z.object({
-  activityTypeId: z.string().uuid().optional(),
-  includeDetails: z.enum(["true", "false"]).default("false"),
+const getUserRatingsSchema = z.object({
+  activityTypeId: z.string().uuid('Invalid activity type ID').optional(),
+  skillType: z.enum(['physical', 'technical', 'mental', 'tactical']).optional(),
+  page: z.number().int().min(1).default(1),
+  limit: z.number().int().min(1).max(50).default(20),
 });
 
-// POST /skill-ratings - Submit skill ratings for an activity participant
-skillRatingRouter.post(
-  "/",
+const getActivityRatingsSchema = z.object({
+  page: z.number().int().min(1).default(1),
+  limit: z.number().int().min(1).max(50).default(20),
+});
+
+const getSkillLeaderboardSchema = z.object({
+  skillDefinitionId: z.string().uuid('Invalid skill definition ID'),
+  activityTypeId: z.string().uuid('Invalid activity type ID').optional(),
+  page: z.number().int().min(1).default(1),
+  limit: z.number().int().min(1).max(50).default(20),
+});
+
+// POST /skill-ratings/submit - Submit a skill rating
+skillRatingRouter.post('/submit',
   authenticateToken,
-  zValidator("json", submitSkillRatingsSchema),
+  zValidator('json', submitRatingSchema),
   async (c) => {
     try {
-      const user = c.get("user");
-      const ratingRequest = c.req.valid("json");
+      const user = c.get('user');
+      const ratingData = c.req.valid('json');
 
-      console.log(
-        `📊 User ${user.username} submitting ${ratingRequest.ratings.length} skill ratings`
-      );
+      console.log(`📊 ${user.username} submitting rating for user ${ratingData.ratedUserId}`);
 
-      const responses = await skillRatingService.submitSkillRatings(
-        user.id,
-        ratingRequest
-      );
-
-      return c.json(
-        {
-          status: "success",
-          data: {
-            ratings: responses,
-            summary: {
-              totalRatings: responses.length,
-              ratedUser: ratingRequest.ratedUserId,
-              isAnonymous: ratingRequest.isAnonymous,
-            },
-          },
-          message: `Successfully submitted ${responses.length} skill ratings`,
-        },
-        201
-      );
-    } catch (error) {
-      console.error("Error submitting skill ratings:", error);
-
-      if (error instanceof Error) {
-        return c.json(
-          {
-            error: error.message,
-            code: "SKILL_RATING_ERROR",
-          },
-          400
-        );
+      // Prevent self-rating
+      if (ratingData.ratedUserId === user.id) {
+        return c.json({
+          success: false,
+          error: "You cannot rate yourself",
+        }, 400);
       }
 
-      return c.json({ error: "Failed to submit skill ratings" }, 500);
-    }
-  }
-);
+      // Check if user was participant in the activity
+      const participation = await db.query.activityParticipants.findFirst({
+        where: and(
+          eq(activityParticipants.activityId, ratingData.activityId),
+          eq(activityParticipants.userId, user.id),
+          eq(activityParticipants.status, 'accepted')
+        ),
+      });
 
-// GET /skill-ratings/activity/:activityId/status - Get rating status for an activity
-skillRatingRouter.get(
-  "/activity/:activityId/status",
-  authenticateToken,
-  async (c) => {
-    try {
-      const activityId = c.req.param("activityId");
-      const user = c.get("user");
+      if (!participation) {
+        return c.json({
+          success: false,
+          error: "You must be a participant in this activity to submit ratings",
+        }, 403);
+      }
 
-      const status = await skillRatingService.getActivityRatingStatus(
-        activityId,
-        user.id
-      );
+      // Check if rated user was also a participant
+      const ratedUserParticipation = await db.query.activityParticipants.findFirst({
+        where: and(
+          eq(activityParticipants.activityId, ratingData.activityId),
+          eq(activityParticipants.userId, ratingData.ratedUserId),
+          eq(activityParticipants.status, 'accepted')
+        ),
+      });
+
+      if (!ratedUserParticipation) {
+        return c.json({
+          success: false,
+          error: "Rated user was not a participant in this activity",
+        }, 400);
+      }
+
+      // Check for duplicate rating
+      const existingRating = await db.query.userActivitySkillRatings.findFirst({
+        where: and(
+          eq(userActivitySkillRatings.activityId, ratingData.activityId),
+          eq(userActivitySkillRatings.ratedUserId, ratingData.ratedUserId),
+          eq(userActivitySkillRatings.ratingUserId, user.id),
+          eq(userActivitySkillRatings.skillDefinitionId, ratingData.skillDefinitionId)
+        ),
+      });
+
+      if (existingRating) {
+        return c.json({
+          success: false,
+          error: "You have already rated this skill for this user in this activity",
+        }, 400);
+      }
+
+      // Use the service method to submit rating
+      const result = await skillRatingService.submitRating({
+        activityId: ratingData.activityId,
+        ratedUserId: ratingData.ratedUserId,
+        ratingUserId: user.id,
+        skillDefinitionId: ratingData.skillDefinitionId,
+        ratingValue: ratingData.ratingValue,
+        comment: ratingData.comment,
+        confidence: ratingData.confidence,
+        isAnonymous: ratingData.isAnonymous,
+      });
 
       return c.json({
-        status: "success",
-        data: { ratingStatus: status },
+        success: true,
+        data: result,
+        message: "Skill rating submitted successfully",
       });
     } catch (error) {
-      console.error("Error getting activity rating status:", error);
-      return c.json({ error: "Failed to get rating status" }, 500);
+      console.error("Error submitting skill rating:", error);
+      return c.json({
+        success: false,
+        error: "Failed to submit skill rating",
+      }, 500);
     }
   }
 );
 
-// GET /skill-ratings/activity/:activityId/pending - Get pending ratings for user
-skillRatingRouter.get(
-  "/activity/:activityId/pending",
+// GET /skill-ratings/user/:userId - Get skill ratings for a user
+skillRatingRouter.get('/user/:userId',
   authenticateToken,
+  zValidator('query', getUserRatingsSchema),
   async (c) => {
     try {
-      const activityId = c.req.param("activityId");
-      const user = c.get("user");
+      const userId = c.req.param('userId');
+      const { activityTypeId, skillType, page, limit } = c.req.valid('query');
+      const offset = (page - 1) * limit;
 
-      const pendingRatings = await skillRatingService.getPendingRatingsForUser(
-        user.id,
-        activityId
+      console.log(`📊 Getting skill ratings for user ${userId}`);
+
+      // Use the service method to get user skill summaries
+      const summaries = await skillRatingService.getUserSkillSummaries(
+        userId,
+        activityTypeId,
       );
 
-      const totalPendingRatings = pendingRatings.reduce(
-        (total, participant) =>
-          total +
-          participant.skillsToRate.filter((skill) => !skill.alreadyRated)
-            .length,
-        0
+      // Get recent ratings with comments using service method
+      const recentRatings = await skillRatingService.getRecentRatingsWithComments(
+        userId,
+        5
       );
 
       return c.json({
-        status: "success",
+        success: true,
         data: {
-          pendingRatings,
-          summary: {
-            participantsToRate: pendingRatings.length,
-            totalPendingRatings,
-            activityId,
+          skillSummaries: summaries,
+          recentRatings,
+          pagination: {
+            page,
+            limit,
+            hasMore: summaries.length === limit,
           },
         },
       });
     } catch (error) {
-      console.error("Error getting pending ratings:", error);
-      return c.json({ error: "Failed to get pending ratings" }, 500);
+      console.error("Error getting user skill ratings:", error);
+      return c.json({
+        success: false,
+        error: "Failed to get skill ratings",
+      }, 500);
     }
   }
 );
 
-// GET /skill-ratings/user/:userId/summary - Get skill summary for a user
-skillRatingRouter.get(
-  "/user/:userId/summary",
+// GET /skill-ratings/activity/:activityId - Get all ratings for an activity
+skillRatingRouter.get('/activity/:activityId',
   authenticateToken,
-  zValidator("query", getUserSkillsQuerySchema),
+  zValidator('query', getActivityRatingsSchema),
   async (c) => {
     try {
-      const userId = c.req.param("userId");
-      const query = c.req.valid("query");
-      const requestingUser = c.get("user");
+      const user = c.get('user');
+      const activityId = c.req.param('activityId');
+      const { page, limit } = c.req.valid('query');
+      const offset = (page - 1) * limit;
 
-      // Users can view their own detailed summaries, others get basic info
-      const isOwnProfile = userId === requestingUser.id;
-      const includeDetails = query.includeDetails === "true" && isOwnProfile;
+      console.log(`📊 Getting activity ratings for activity ${activityId}`);
 
-      const skillSummary = await skillRatingService.getUserSkillSummary(
-        userId,
-        query.activityTypeId
-      );
-
-      // Filter sensitive information for other users' profiles
-      const publicSkillSummary = skillSummary.map((skill) => ({
-        skillName: skill.skillName,
-        skillType: skill.skillType,
-        averageRating: Math.round(skill.averageRating * 10) / 10, // Round to 1 decimal
-        totalRatings: skill.totalRatings,
-        trend: skill.trend,
-        // Only include detailed info for own profile
-        ...(includeDetails && {
-          confidence: skill.confidence,
-          lastRated: skill.lastRated,
-        }),
-      }));
-
-      // Calculate overall statistics
-      const overallStats = {
-        totalSkills: skillSummary.length,
-        averageRating:
-          skillSummary.length > 0
-            ? skillSummary.reduce(
-                (sum, skill) => sum + skill.averageRating,
-                0
-              ) / skillSummary.length
-            : 0,
-        totalRatingsReceived: skillSummary.reduce(
-          (sum, skill) => sum + skill.totalRatings,
-          0
-        ),
-        strongestSkills: skillSummary
-          .filter((skill) => skill.totalRatings >= 3) // Only skills with enough ratings
-          .sort((a, b) => b.averageRating - a.averageRating)
-          .slice(0, 5)
-          .map((skill) => ({
-            skillName: skill.skillName,
-            averageRating: Math.round(skill.averageRating * 10) / 10,
-          })),
-        improvingSkills: skillSummary
-          .filter((skill) => skill.trend === "improving")
-          .map((skill) => skill.skillName),
-      };
-
-      return c.json({
-        status: "success",
-        data: {
-          userId,
-          isOwnProfile,
-          overallStats,
-          skills: publicSkillSummary,
-          activityTypeFilter: query.activityTypeId,
-        },
+      // Check if user has access to view these ratings (participant or activity creator)
+      const activity = await db.query.activities.findFirst({
+        where: eq(activities.id, activityId),
       });
-    } catch (error) {
-      console.error("Error getting user skill summary:", error);
-      return c.json({ error: "Failed to get skill summary" }, 500);
-    }
-  }
-);
 
-// GET /skill-ratings/my-skills - Get current user's skill summary (convenience endpoint)
-skillRatingRouter.get(
-  "/my-skills",
-  authenticateToken,
-  zValidator("query", getUserSkillsQuerySchema),
-  async (c) => {
-    try {
-      const user = c.get("user");
-      const query = c.req.valid("query");
+      if (!activity) {
+        return c.json({
+          success: false,
+          error: "Activity not found",
+        }, 404);
+      }
 
-      const skillSummary = await skillRatingService.getUserSkillSummary(
-        user.id,
-        query.activityTypeId
-      );
-
-      // Group skills by type for better organization
-      const skillsByType = skillSummary.reduce((groups, skill) => {
-        const type = skill.skillType;
-        if (!groups[type]) groups[type] = [];
-        groups[type].push(skill);
-        return groups;
-      }, {} as Record<string, typeof skillSummary>);
-
-      // Calculate personal statistics
-      const personalStats = {
-        totalSkillsRated: skillSummary.length,
-        averageRating:
-          skillSummary.length > 0
-            ? skillSummary.reduce(
-                (sum, skill) => sum + skill.averageRating,
-                0
-              ) / skillSummary.length
-            : 0,
-        totalRatingsReceived: skillSummary.reduce(
-          (sum, skill) => sum + skill.totalRatings,
-          0
+      const participation = await db.query.activityParticipants.findFirst({
+        where: and(
+          eq(activityParticipants.activityId, activityId),
+          eq(activityParticipants.userId, user.id)
         ),
-        skillTypeBreakdown: Object.entries(skillsByType).map(
-          ([type, skills]) => ({
-            skillType: type,
-            skillCount: skills.length,
-            averageRating:
-              skills.reduce((sum, skill) => sum + skill.averageRating, 0) /
-              skills.length,
-          })
-        ),
-        recentTrends: {
-          improving: skillSummary.filter((skill) => skill.trend === "improving")
-            .length,
-          stable: skillSummary.filter((skill) => skill.trend === "stable")
-            .length,
-          declining: skillSummary.filter((skill) => skill.trend === "declining")
-            .length,
-        },
-      };
-
-      return c.json({
-        status: "success",
-        data: {
-          personalStats,
-          skillsByType,
-          allSkills: skillSummary,
-        },
       });
-    } catch (error) {
-      console.error("Error getting user skills:", error);
-      return c.json({ error: "Failed to get your skills" }, 500);
-    }
-  }
-);
 
-// GET /skill-ratings/activity/:activityId/participant/:userId - Get activity-specific ratings for a participant
-skillRatingRouter.get(
-  "/activity/:activityId/participant/:userId",
-  authenticateToken,
-  async (c) => {
-    try {
-      const activityId = c.req.param("activityId");
-      const userId = c.req.param("userId");
-      const requestingUser = c.get("user");
+      const isCreator = activity.creatorId === user.id;
+      const isParticipant = !!participation;
 
-      // Users can see detailed ratings for activities they participated in
-      // For others, show limited information
-      const includeComments = requestingUser.id === userId;
+      if (!isCreator && !isParticipant) {
+        return c.json({
+          success: false,
+          error: "Access denied. You must be a participant or creator of this activity.",
+        }, 403);
+      }
 
-      const activityRatings = await skillRatingService.getActivitySkillRatings(
-        activityId,
-        userId,
-        includeComments
-      );
+      // Get ratings for this activity
+      const ratings = await db
+        .select({
+          id: userActivitySkillRatings.id,
+          ratedUserId: userActivitySkillRatings.ratedUserId,
+          ratingUserId: userActivitySkillRatings.ratingUserId,
+          skillDefinitionId: userActivitySkillRatings.skillDefinitionId,
+          ratingValue: userActivitySkillRatings.ratingValue,
+          comment: userActivitySkillRatings.comment,
+          confidence: userActivitySkillRatings.confidence,
+          isAnonymous: userActivitySkillRatings.isAnonymous,
+          createdAt: userActivitySkillRatings.createdAt,
+          skillName: skillDefinitions.skillType,
+        })
+        .from(userActivitySkillRatings)
+        .leftJoin(skillDefinitions, eq(userActivitySkillRatings.skillDefinitionId, skillDefinitions.id))
+        .where(eq(userActivitySkillRatings.activityId, activityId))
+        .orderBy(desc(userActivitySkillRatings.createdAt))
+        .limit(limit)
+        .offset(offset);
+
+      // Get total count
+      const totalCountResult = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(userActivitySkillRatings)
+        .where(eq(userActivitySkillRatings.activityId, activityId));
+
+      const totalCount = totalCountResult[0]?.count || 0;
 
       return c.json({
-        status: "success",
+        success: true,
         data: {
-          activityId,
-          participantId: userId,
-          skillRatings: activityRatings,
-          summary: {
-            totalSkillsRated: activityRatings.length,
-            averageRating:
-              activityRatings.length > 0
-                ? activityRatings.reduce(
-                    (sum, skill) => sum + skill.averageRating,
-                    0
-                  ) / activityRatings.length
-                : 0,
-            totalRatingsReceived: activityRatings.reduce(
-              (sum, skill) => sum + skill.totalRatings,
-              0
-            ),
+          ratings,
+          pagination: {
+            page,
+            limit,
+            total: totalCount,
+            totalPages: Math.ceil(totalCount / limit),
+            hasMore: offset + limit < totalCount,
           },
-          includesComments: includeComments,
         },
       });
     } catch (error) {
-      console.error("Error getting activity skill ratings:", error);
-      return c.json({ error: "Failed to get activity skill ratings" }, 500);
+      console.error("Error getting activity ratings:", error);
+      return c.json({
+        success: false,
+        error: "Failed to get activity ratings",
+      }, 500);
     }
   }
 );
 
-// GET /skill-ratings/statistics - Get system-wide skill rating statistics (admin)
-skillRatingRouter.get("/statistics", authenticateToken, async (c) => {
+// GET /skill-ratings/leaderboard - Get skill leaderboard
+skillRatingRouter.get('/leaderboard',
+  authenticateToken,
+  zValidator('query', getSkillLeaderboardSchema),
+  async (c) => {
+    try {
+      const { skillDefinitionId, activityTypeId, page, limit } = c.req.valid('query');
+      const offset = (page - 1) * limit;
+
+      console.log(`🏆 Getting skill leaderboard for skill ${skillDefinitionId}`);
+
+      // Use the service method for getting skill leaderboard
+      const leaderboard = await skillRatingService.getSkillLeaderboard(
+        skillDefinitionId,
+        activityTypeId,
+        limit,
+        offset
+      );
+
+      // Get skill definition details
+      const skillDefinition = await db.query.skillDefinitions.findFirst({
+        where: eq(skillDefinitions.id, skillDefinitionId),
+      });
+
+      return c.json({
+        success: true,
+        data: {
+          skill: skillDefinition,
+          leaderboard,
+          pagination: {
+            page,
+            limit,
+            hasMore: leaderboard.length === limit,
+          },
+        },
+      });
+    } catch (error) {
+      console.error("Error getting skill leaderboard:", error);
+      return c.json({
+        success: false,
+        error: "Failed to get skill leaderboard",
+      }, 500);
+    }
+  }
+);
+
+// GET /skill-ratings/my-pending - Get activities where user needs to submit ratings
+skillRatingRouter.get('/my-pending', authenticateToken, async (c) => {
   try {
-    const user = c.get("user");
+    const user = c.get('user');
 
-    // Only admins can view system statistics
-    if (user.role !== "admin") {
-      return c.json({ error: "Admin access required" }, 403);
+    console.log(`📊 Getting pending ratings for ${user.username}`);
+
+    // Get completed activities where user participated but hasn't rated all other participants
+    const completedActivities = await db
+      .select({
+        id: activities.id,
+        description: activities.description,
+        activityTypeName: activityTypes.name,
+        completedAt: activities.updatedAt,
+      })
+      .from(activities)
+      .leftJoin(activityTypes, eq(activities.activityTypeId, activityTypes.id))
+      .leftJoin(activityParticipants, eq(activities.id, activityParticipants.activityId))
+      .where(
+        and(
+          eq(activityParticipants.userId, user.id),
+          eq(activityParticipants.status, 'accepted'),
+          sql`${activities.dateTime} < NOW() - INTERVAL '1 hour'` // Activity completed at least 1 hour ago
+        )
+      )
+      .orderBy(desc(activities.updatedAt))
+      .limit(10);
+
+    // For each activity, check if there are participants the user hasn't rated
+    const pendingActivities = [];
+
+    for (const activity of completedActivities) {
+      // Get other participants in this activity
+      const otherParticipants = await db
+        .select({
+          userId: activityParticipants.userId,
+        })
+        .from(activityParticipants)
+        .where(
+          and(
+            eq(activityParticipants.activityId, activity.id),
+            eq(activityParticipants.status, 'accepted'),
+            sql`${activityParticipants.userId} != ${user.id}`
+          )
+        );
+
+      // Check if user has rated all other participants
+      const ratedParticipants = await db
+        .select({
+          ratedUserId: userActivitySkillRatings.ratedUserId,
+        })
+        .from(userActivitySkillRatings)
+        .where(
+          and(
+            eq(userActivitySkillRatings.activityId, activity.id),
+            eq(userActivitySkillRatings.ratingUserId, user.id)
+          )
+        );
+
+      const ratedUserIds = new Set(ratedParticipants.map(r => r.ratedUserId));
+      const unratedParticipants = otherParticipants.filter(p => !ratedUserIds.has(p.userId));
+
+      if (unratedParticipants.length > 0) {
+        pendingActivities.push({
+          ...activity,
+          pendingRatingsCount: unratedParticipants.length,
+        });
+      }
     }
-
-    const statistics = await skillRatingService.getSkillRatingStatistics();
 
     return c.json({
-      status: "success",
-      data: { statistics },
+      success: true,
+      data: {
+        pendingActivities,
+        totalPending: pendingActivities.length,
+      },
     });
   } catch (error) {
-    console.error("Error getting skill rating statistics:", error);
-    return c.json({ error: "Failed to get statistics" }, 500);
+    console.error("Error getting pending ratings:", error);
+    return c.json({
+      success: false,
+      error: "Failed to get pending ratings",
+    }, 500);
   }
 });
 
-// GET /skill-ratings/suspicious-patterns - Detect suspicious rating patterns (admin)
-skillRatingRouter.get("/suspicious-patterns", authenticateToken, async (c) => {
+// GET /skill-ratings/analytics/:userId - Get skill analytics for a user
+skillRatingRouter.get('/analytics/:userId', authenticateToken, async (c) => {
   try {
-    const user = c.get("user");
+    const currentUser = c.get('user');
+    const userId = c.req.param('userId');
 
-    // Only admins can view suspicious patterns
-    if (user.role !== "admin") {
-      return c.json({ error: "Admin access required" }, 403);
+    console.log(`📈 Getting skill analytics for user ${userId}`);
+
+    // Check if user can view analytics (self or connected users)
+    if (userId !== currentUser.id) {
+      const connection = await db.query.userConnections.findFirst({
+        where: and(
+          or(
+            and(eq(userConnections.user1Id, currentUser.id), eq(userConnections.user2Id, userId)),
+            and(eq(userConnections.user1Id, userId), eq(userConnections.user2Id, currentUser.id))
+          ),
+          eq(userConnections.status, 'accepted')
+        ),
+      });
+
+      if (!connection) {
+        return c.json({
+          success: false,
+          error: "Access denied. You can only view analytics for connected users.",
+        }, 403);
+      }
     }
 
-    const suspiciousPatterns =
-      await skillRatingService.detectSuspiciousRatingPatterns();
+    // Get skill progression over time (last 6 months)
+    const sixMonthsAgo = new Date();
+    sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+
+    const skillProgression = await db
+      .select({
+        skillName: skillDefinitions.skillType,
+        activityTypeName: activityTypes.name,
+        averageRating: sql<number>`AVG(${userActivitySkillRatings.ratingValue})`,
+        totalRatings: sql<number>`COUNT(${userActivitySkillRatings.id})`,
+        month: sql<string>`DATE_TRUNC('month', ${userActivitySkillRatings.createdAt})`,
+      })
+      .from(userActivitySkillRatings)
+      .leftJoin(skillDefinitions, eq(userActivitySkillRatings.skillDefinitionId, skillDefinitions.id))
+      .leftJoin(activities, eq(userActivitySkillRatings.activityId, activities.id))
+      .leftJoin(activityTypes, eq(activities.activityTypeId, activityTypes.id))
+      .where(
+        and(
+          eq(userActivitySkillRatings.ratedUserId, userId),
+          sql`${userActivitySkillRatings.createdAt} >= ${sixMonthsAgo}`
+        )
+      )
+      .groupBy(
+        skillDefinitions.skillType,
+        activityTypes.name,
+        sql`DATE_TRUNC('month', ${userActivitySkillRatings.createdAt})`
+      )
+      .orderBy(sql`DATE_TRUNC('month', ${userActivitySkillRatings.createdAt}) DESC`);
+
+    // Get top skills across all activity types
+    const topSkills = await db
+      .select({
+        skillName: skillDefinitions.skillType,
+        averageRating: sql<number>`AVG(${userActivitySkillRatings.ratingValue})`,
+        totalRatings: sql<number>`COUNT(${userActivitySkillRatings.id})`,
+      })
+      .from(userActivitySkillRatings)
+      .leftJoin(skillDefinitions, eq(userActivitySkillRatings.skillDefinitionId, skillDefinitions.id))
+      .where(eq(userActivitySkillRatings.ratedUserId, userId))
+      .groupBy(skillDefinitions.skillType)
+      .having(sql`COUNT(${userActivitySkillRatings.id}) >= 3`) // At least 3 ratings
+      .orderBy(sql`AVG(${userActivitySkillRatings.ratingValue}) DESC`)
+      .limit(10);
+
+    // Get skill distribution by activity type
+    const skillByActivityType = await db
+      .select({
+        activityTypeName: activityTypes.name,
+        averageRating: sql<number>`AVG(${userActivitySkillRatings.ratingValue})`,
+        totalRatings: sql<number>`COUNT(${userActivitySkillRatings.id})`,
+        skillCount: sql<number>`COUNT(DISTINCT ${userActivitySkillRatings.skillDefinitionId})`,
+      })
+      .from(userActivitySkillRatings)
+      .leftJoin(activities, eq(userActivitySkillRatings.activityId, activities.id))
+      .leftJoin(activityTypes, eq(activities.activityTypeId, activityTypes.id))
+      .where(eq(userActivitySkillRatings.ratedUserId, userId))
+      .groupBy(activityTypes.name)
+      .orderBy(sql`AVG(${userActivitySkillRatings.ratingValue}) DESC`);
+
+    // Get recent improvements (skills with increasing trend)
+    const recentImprovements = await db
+      .select({
+        skillName: skillDefinitions.skillType,
+        activityTypeName: activityTypes.name,
+        currentAverage: userActivityTypeSkillSummaries.averageRating,
+        totalRatings: sql<number>`COUNT(${userActivitySkillRatings.id})`,
+        recentAverage: sql<number>`AVG(CASE WHEN ${userActivitySkillRatings.createdAt} >= NOW() - INTERVAL '30 days' THEN ${userActivitySkillRatings.ratingValue} END)`,
+      })
+      .from(userActivityTypeSkillSummaries)
+      .leftJoin(skillDefinitions, eq(userActivityTypeSkillSummaries.skillDefinitionId, skillDefinitions.id))
+      .leftJoin(activityTypes, eq(userActivityTypeSkillSummaries.activityTypeId, activityTypes.id))
+      .leftJoin(userActivitySkillRatings, and(
+        eq(userActivitySkillRatings.ratedUserId, userActivityTypeSkillSummaries.userId),
+        eq(userActivitySkillRatings.skillDefinitionId, userActivityTypeSkillSummaries.skillDefinitionId)
+      ))
+      .where(eq(userActivityTypeSkillSummaries.userId, userId))
+      .groupBy(
+        skillDefinitions.skillType,
+        activityTypes.name,
+        userActivityTypeSkillSummaries.averageRating
+      )
+      .having(sql`COUNT(${userActivitySkillRatings.id}) >= 5`) // At least 5 total ratings
+      .orderBy(sql`AVG(CASE WHEN ${userActivitySkillRatings.createdAt} >= NOW() - INTERVAL '30 days' THEN ${userActivitySkillRatings.ratingValue} END) - ${userActivityTypeSkillSummaries.averageRating} DESC`)
+      .limit(5);
 
     return c.json({
-      status: "success",
+      success: true,
       data: {
-        suspiciousPatterns,
+        skillProgression,
+        topSkills,
+        skillByActivityType,
+        recentImprovements,
         summary: {
-          totalPatterns: suspiciousPatterns.length,
-          highSeverity: suspiciousPatterns.filter((p) => p.severity === "high")
-            .length,
-          mediumSeverity: suspiciousPatterns.filter(
-            (p) => p.severity === "medium"
-          ).length,
-          lowSeverity: suspiciousPatterns.filter((p) => p.severity === "low")
-            .length,
+          totalRatingsReceived: topSkills.reduce((sum, skill) => sum + skill.totalRatings, 0),
+          averageOverallRating: topSkills.length > 0 
+            ? topSkills.reduce((sum, skill) => sum + skill.averageRating, 0) / topSkills.length 
+            : 0,
+          skillsTracked: topSkills.length,
         },
       },
     });
   } catch (error) {
-    console.error("Error detecting suspicious patterns:", error);
-    return c.json({ error: "Failed to detect suspicious patterns" }, 500);
+    console.error("Error getting skill analytics:", error);
+    return c.json({
+      success: false,
+      error: "Failed to get skill analytics",
+    }, 500);
   }
 });
 
-// DELETE /skill-ratings/activity/:activityId/user/:ratedUserId - Delete ratings (admin or within time limit)
-skillRatingRouter.delete(
-  "/activity/:activityId/user/:ratedUserId",
-  authenticateToken,
-  async (c) => {
-    try {
-      const activityId = c.req.param("activityId");
-      const ratedUserId = c.req.param("ratedUserId");
-      const user = c.get("user");
+// DELETE /skill-ratings/:id - Delete a skill rating (only by original rater or admin)
+skillRatingRouter.delete('/:id', authenticateToken, async (c) => {
+  try {
+    const user = c.get('user');
+    const ratingId = c.req.param('id');
 
-      // Only allow deletion by admin or the original rater within 24 hours
-      const isAdmin = user.role === "admin";
+    console.log(`🗑️ ${user.username} attempting to delete rating ${ratingId}`);
 
-      if (!isAdmin) {
-        // Check if user is the original rater and within time limit
-        // Implementation would check creation time and allow deletion within 24 hours
-        return c.json(
-          {
-            error:
-              "Can only delete your own ratings within 24 hours of submission",
-          },
-          403
-        );
-      }
+    // Get the rating
+    const rating = await db.query.userActivitySkillRatings.findFirst({
+      where: eq(userActivitySkillRatings.id, ratingId),
+    });
 
-      // For this implementation, we'll keep it simple and only allow admin deletion
-      // In production, you'd implement the time-based deletion logic
-
-      const deletedCount = await db
-        .delete(userActivitySkillRatings)
-        .where(
-          and(
-            eq(userActivitySkillRatings.activityId, activityId),
-            eq(userActivitySkillRatings.ratedUserId, ratedUserId),
-            // Only delete ratings from the requesting user if not admin
-            isAdmin
-              ? undefined
-              : eq(userActivitySkillRatings.ratingUserId, user.id)
-          )
-        )
-        .returning({ id: userActivitySkillRatings.id });
-
-      // Recalculate summaries after deletion
-      if (deletedCount.length > 0) {
-        await skillRatingService.recalculateUserSkillSummaries(
-          ratedUserId,
-          activityId
-        );
-      }
-
+    if (!rating) {
       return c.json({
-        status: "success",
-        data: {
-          deletedRatings: deletedCount.length,
-          message: `Deleted ${deletedCount.length} skill ratings`,
-        },
-      });
-    } catch (error) {
-      console.error("Error deleting skill ratings:", error);
-      return c.json({ error: "Failed to delete skill ratings" }, 500);
+        success: false,
+        error: "Rating not found",
+      }, 404);
     }
-  }
-);
 
-// PUT /skill-ratings/:ratingId - Update a specific skill rating (within time limit)
-skillRatingRouter.put(
-  "/:ratingId",
+    // Check if user can delete this rating (original rater or admin)
+    if (rating.ratingUserId !== user.id && user.role !== 'admin') {
+      return c.json({
+        success: false,
+        error: "Access denied. You can only delete your own ratings.",
+      }, 403);
+    }
+
+    // Check if rating is too old to delete (e.g., more than 24 hours)
+    const ratingAge = Date.now() - rating.createdAt.getTime();
+    const maxEditTime = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
+
+    if (ratingAge > maxEditTime && user.role !== 'admin') {
+      return c.json({
+        success: false,
+        error: "Cannot delete ratings older than 24 hours",
+      }, 400);
+    }
+
+    // Delete the rating
+    await db
+      .delete(userActivitySkillRatings)
+      .where(eq(userActivitySkillRatings.id, ratingId));
+
+    // Track the change
+    await deltaTrackingService.trackChange({
+      entityType: 'skill_rating',
+      entityId: ratingId,
+      changeType: 'delete',
+      previousData: rating,
+      affectedUserId: rating.ratedUserId,
+      relatedEntityId: rating.activityId,
+      triggeredBy: user.id,
+    });
+
+    // Trigger skill summary recalculation
+    await skillRatingService.recalculateSkillSummaries(
+      rating.ratedUserId,
+      rating.skillDefinitionId
+    );
+
+    return c.json({
+      success: true,
+      message: "Skill rating deleted successfully",
+    });
+  } catch (error) {
+    console.error("Error deleting skill rating:", error);
+    return c.json({
+      success: false,
+      error: "Failed to delete skill rating",
+    }, 500);
+  }
+});
+
+// PUT /skill-ratings/:id - Update a skill rating (only by original rater within time limit)
+skillRatingRouter.put('/:id',
   authenticateToken,
-  zValidator(
-    "json",
-    z.object({
-      ratingValue: z.number().int().min(1).max(10),
-      confidence: z.number().int().min(1).max(5),
-      comment: z.string().max(500).optional(),
-    })
-  ),
+  zValidator('json', z.object({
+    ratingValue: z.number().int().min(1).max(10),
+    comment: z.string().max(500, 'Comment too long').optional(),
+    confidence: z.number().min(1).max(10).optional(),
+  })),
   async (c) => {
     try {
-      const ratingId = c.req.param("ratingId");
-      const user = c.get("user");
-      const updateData = c.req.valid("json");
+      const user = c.get('user');
+      const ratingId = c.req.param('id');
+      const updateData = c.req.valid('json');
 
-      // Check if the rating exists and belongs to the user
-      const [existingRating] = await db
-        .select({
-          id: userActivitySkillRatings.id,
-          ratingUserId: userActivitySkillRatings.ratingUserId,
-          ratedUserId: userActivitySkillRatings.ratedUserId,
-          activityId: userActivitySkillRatings.activityId,
-          createdAt: userActivitySkillRatings.createdAt,
-        })
-        .from(userActivitySkillRatings)
-        .where(eq(userActivitySkillRatings.id, ratingId))
-        .limit(1);
+      console.log(`✏️ ${user.username} updating rating ${ratingId}`);
 
-      if (!existingRating) {
-        return c.json({ error: "Rating not found" }, 404);
+      // Get the rating
+      const rating = await db.query.userActivitySkillRatings.findFirst({
+        where: eq(userActivitySkillRatings.id, ratingId),
+      });
+
+      if (!rating) {
+        return c.json({
+          success: false,
+          error: "Rating not found",
+        }, 404);
       }
 
-      if (existingRating.ratingUserId !== user.id) {
-        return c.json({ error: "Can only update your own ratings" }, 403);
+      // Check if user can update this rating (only original rater)
+      if (rating.ratingUserId !== user.id) {
+        return c.json({
+          success: false,
+          error: "Access denied. You can only update your own ratings.",
+        }, 403);
       }
 
-      // Check if within edit time limit (24 hours)
-      const timeLimit = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
-      const timeSinceCreation = Date.now() - existingRating.createdAt.getTime();
+      // Check if rating is too old to update (e.g., more than 1 hour)
+      const ratingAge = Date.now() - rating.createdAt.getTime();
+      const maxEditTime = 60 * 60 * 1000; // 1 hour in milliseconds
 
-      if (timeSinceCreation > timeLimit) {
-        return c.json(
-          {
-            error: "Can only edit ratings within 24 hours of submission",
-          },
-          403
-        );
+      if (ratingAge > maxEditTime) {
+        return c.json({
+          success: false,
+          error: "Cannot update ratings older than 1 hour",
+        }, 400);
       }
 
       // Update the rating
@@ -541,125 +681,100 @@ skillRatingRouter.put(
         .update(userActivitySkillRatings)
         .set({
           ratingValue: updateData.ratingValue,
-          confidence: updateData.confidence,
-          comment: updateData.comment,
+          comment: updateData.comment ?? rating.comment,
+          confidence: updateData.confidence ?? rating.confidence,
         })
         .where(eq(userActivitySkillRatings.id, ratingId))
         .returning();
 
-      // Recalculate skill summaries
-      await skillRatingService.recalculateUserSkillSummaries(
-        existingRating.ratedUserId,
-        existingRating.activityId
+      // Track the change
+      await deltaTrackingService.trackChange({
+        entityType: 'skill_rating',
+        entityId: ratingId,
+        changeType: 'update',
+        previousData: rating,
+        newData: updatedRating,
+        affectedUserId: rating.ratedUserId,
+        relatedEntityId: rating.activityId,
+        triggeredBy: user.id,
+      });
+
+      // Trigger skill summary recalculation
+      await skillRatingService.recalculateSkillSummaries(
+        rating.ratedUserId,
+        rating.skillDefinitionId
       );
 
       return c.json({
-        status: "success",
-        data: {
-          updatedRating,
-          message: "Rating updated successfully",
-        },
+        success: true,
+        data: updatedRating,
+        message: "Skill rating updated successfully",
       });
     } catch (error) {
       console.error("Error updating skill rating:", error);
-      return c.json({ error: "Failed to update rating" }, 500);
+      return c.json({
+        success: false,
+        error: "Failed to update skill rating",
+      }, 500);
     }
   }
 );
 
-// GET /skill-ratings/leaderboard/:skillDefinitionId - Get leaderboard for a specific skill
-skillRatingRouter.get("/leaderboard/:skillDefinitionId", async (c) => {
+// GET /skill-ratings/stats - Get overall skill rating statistics
+skillRatingRouter.get('/stats', authenticateToken, async (c) => {
   try {
-    const skillDefinitionId = c.req.param("skillDefinitionId");
-    const limit = parseInt(c.req.query("limit") || "50");
-    const offset = parseInt(c.req.query("offset") || "0");
-    const activityTypeId = c.req.query("activityTypeId"); // Optional filter
+    console.log('📈 Getting overall skill rating statistics');
 
-    let query = db
-      .select({
-        user: {
-          id: users.id,
-          username: users.username,
-          avatarUrl: users.avatarUrl,
-        },
-        skillSummary: userActivityTypeSkillSummaries,
-        skill: skillDefinitions,
+    // Get total ratings count
+    const totalRatingsResult = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(userActivitySkillRatings);
+
+    // Get average rating across all skills
+    const averageRatingResult = await db
+      .select({ 
+        average: sql<number>`AVG(${userActivitySkillRatings.ratingValue})`,
       })
-      .from(userActivityTypeSkillSummaries)
-      .leftJoin(users, eq(userActivityTypeSkillSummaries.userId, users.id))
-      .leftJoin(
-        skillDefinitions,
-        eq(
-          userActivityTypeSkillSummaries.skillDefinitionId,
-          skillDefinitions.id
-        )
-      )
-      .where(
-        eq(userActivityTypeSkillSummaries.skillDefinitionId, skillDefinitionId)
-      );
+      .from(userActivitySkillRatings);
 
-    const conditions = [
-      eq(userActivityTypeSkillSummaries.skillDefinitionId, skillDefinitionId),
-    ];
-
-    if (activityTypeId) {
-      conditions.push(
-        eq(userActivityTypeSkillSummaries.activityTypeId, activityTypeId)
-      );
-    }
-
-    const leaderboard = await db
+    // Get most rated skills
+    const mostRatedSkills = await db
       .select({
-        user: {
-          id: users.id,
-          username: users.username,
-          avatarUrl: users.avatarUrl,
-        },
-        skillSummary: userActivityTypeSkillSummaries,
-        skill: skillDefinitions,
+        skillName: skillDefinitions.skillType,
+        totalRatings: sql<number>`COUNT(${userActivitySkillRatings.id})`,
+        averageRating: sql<number>`AVG(${userActivitySkillRatings.ratingValue})`,
       })
-      .from(userActivityTypeSkillSummaries)
-      .leftJoin(users, eq(userActivityTypeSkillSummaries.userId, users.id))
-      .leftJoin(
-        skillDefinitions,
-        eq(
-          userActivityTypeSkillSummaries.skillDefinitionId,
-          skillDefinitions.id
-        )
-      )
-      .where(and(...conditions))
-      .orderBy(desc(userActivityTypeSkillSummaries.averageRating))
-      .limit(limit)
-      .offset(offset);
+      .from(userActivitySkillRatings)
+      .leftJoin(skillDefinitions, eq(userActivitySkillRatings.skillDefinitionId, skillDefinitions.id))
+      .groupBy(skillDefinitions.skillType)
+      .orderBy(sql`COUNT(${userActivitySkillRatings.id}) DESC`)
+      .limit(10);
 
-    // Get skill info
-    const [skillInfo] = await db
-      .select()
-      .from(skillDefinitions)
-      .where(eq(skillDefinitions.id, skillDefinitionId))
-      .limit(1);
+    // Get most active raters
+    const mostActiveRaters = await db
+      .select({
+        ratingUserId: userActivitySkillRatings.ratingUserId,
+        totalRatingsGiven: sql<number>`COUNT(${userActivitySkillRatings.id})`,
+      })
+      .from(userActivitySkillRatings)
+      .groupBy(userActivitySkillRatings.ratingUserId)
+      .orderBy(sql`COUNT(${userActivitySkillRatings.id}) DESC`)
+      .limit(10);
 
     return c.json({
-      status: "success",
+      success: true,
       data: {
-        skill: skillInfo,
-        leaderboard: leaderboard.map((entry, index) => ({
-          rank: offset + index + 1,
-          user: entry.user,
-          averageRating: (entry.skillSummary?.averageRating || 0) / 100, // Convert from integer storage
-          totalRatings: entry.skillSummary?.totalRatings || 0,
-          trend: entry.skillSummary?.trend || "stable",
-          lastCalculated: entry.skillSummary?.lastCalculatedAt,
-        })),
-        pagination: {
-          limit,
-          offset,
-          total: leaderboard.length,
-        },
+        totalRatings: totalRatingsResult[0]?.count || 0,
+        averageRating: Math.round((averageRatingResult[0]?.average || 0) * 100) / 100,
+        mostRatedSkills,
+        mostActiveRaters,
       },
     });
   } catch (error) {
-    console.error("Error getting skill leaderboard:", error);
-    return c.json({ error: "Failed to get skill leaderboard" }, 500);
+    console.error("Error getting skill rating statistics:", error);
+    return c.json({
+      success: false,
+      error: "Failed to get statistics",
+    }, 500);
   }
 });

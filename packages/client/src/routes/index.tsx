@@ -18,7 +18,7 @@ import { api, queryKeys } from '@/lib/api'
 import { useAuthStore } from '@/stores/auth-store'
 import { Link } from '@tanstack/react-router'
 // Using basic date formatting instead of date-fns
-const formatDate = (date: Date | string) => {
+export const formatDate = (date: Date | string) => {
   const d = new Date(date)
   return d.toLocaleDateString('en-US', {
     month: 'short',
@@ -37,7 +37,7 @@ function Dashboard() {
   const { user } = useAuthStore()
 
   // Fetch user's dashboard data
-  const { data: dashboardData, isLoading } = useQuery({
+  const { data: dashboardData, isLoading: loadingElo } = useQuery({
     queryKey: ['dashboard', user?.id],
     queryFn: async () => {
       if (!user?.id) return null
@@ -62,8 +62,8 @@ function Dashboard() {
 
       return {
         quickStats,
-        recentActivities: recentActivities.data,
-        upcomingActivities: upcomingActivities.data,
+        recentActivities: recentActivities.data?.activities || [],
+        upcomingActivities: upcomingActivities.data?.activities || [],
         invitations,
         eloData,
       }
@@ -76,7 +76,7 @@ function Dashboard() {
     return <div>Please log in to view your dashboard.</div>
   }
 
-  if (isLoading) {
+  if (loadingElo) {
     return <DashboardSkeleton />
   }
 
@@ -84,7 +84,7 @@ function Dashboard() {
   const recentActivities = dashboardData?.recentActivities || []
   const upcomingActivities = dashboardData?.upcomingActivities || []
   const invitations = dashboardData?.invitations || []
-  const eloData = dashboardData?.eloData || []
+  const eloData = dashboardData?.eloData.data || []
 
   return (
     <div className="space-y-6">
@@ -111,23 +111,23 @@ function Dashboard() {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         <StatCard
           title="Average ELO"
-          value={stats?.averageELO ? stats.averageELO.toFixed(0) : '--'}
+          value={stats?.data.averageELO ? stats.data.averageELO.toFixed(0) : '--'}
           icon={Trophy}
-          trend={stats?.averageELO}
+          trend={stats?.data.averageELO}
           trendLabel="vs last week"
         />
         
         <StatCard
           title="Activities This Week"
-          value={stats?.activitiesThisWeek || 0}
+          value={stats?.data.activitiesThisWeek || 0}
           icon={Activity}
-          trend={stats?.averageELO}
+          trend={stats?.data.averageELO}
           trendLabel="vs last week"
         />
         
         <StatCard
           title="Friends"
-          value={stats?.friendsCount || 0}
+          value={stats?.data.friendsCount || 0}
           icon={Users}
           description="Connected athletes"
         />
@@ -156,9 +156,12 @@ function Dashboard() {
           <CardContent>
             {upcomingActivities.length > 0 ? (
               <div className="space-y-4">
-                {upcomingActivities.slice(0, 5).map((activity) => (
-                  <ActivityListItem key={activity.id} activity={activity} />
-                ))}
+                {upcomingActivities.slice(0, 5).map((activity:any, index:number) => {
+                  const uniqueKey = activity.id ? `${activity.id}-upcoming-${index}` : `upcoming-activity-${index}`;
+                  return (
+                    <ActivityListItem key={uniqueKey} activity={activity} />
+                  );
+                })}
                 
                 {upcomingActivities.length > 5 && (
                   <Link to="/activities" className="block">
@@ -196,9 +199,12 @@ function Dashboard() {
           <CardContent>
             {eloData.length > 0 ? (
               <div className="space-y-4">
-                {eloData.slice(0, 5).map((elo:any) => (
-                  <ELOListItem key={elo.activityTypeId} elo={elo} />
-                ))}
+                {eloData.slice(0, 5).map((elo:any, index:number) => {
+                  const uniqueKey = elo.activityTypeId ? `${elo.activityTypeId}-elo-${index}` : `elo-${index}`;
+                  return (
+                    <ELOListItem key={uniqueKey} elo={elo} />
+                  );
+                })}
                 
                 <Link to="/profile/activities" className="block">
                   <Button variant="ghost" className="w-full">
@@ -231,9 +237,13 @@ function Dashboard() {
         <CardContent>
           {recentActivities.length > 0 ? (
             <div className="space-y-4">
-              {recentActivities.map((activity) => (
-                <RecentActivityItem key={activity.id} activity={activity} />
-              ))}
+              {recentActivities.map((activity:any, index:number) => {
+                // Create a unique key combining ID and index to handle duplicates
+                const uniqueKey = activity.id ? `${activity.id}-${index}` : `recent-activity-${index}`;
+                return (
+                  <RecentActivityItem key={uniqueKey} activity={activity} />
+                );
+              })}
               
               <Link to="/feed" className="block">
                 <Button variant="ghost" className="w-full">
@@ -320,7 +330,7 @@ function ActivityListItem({ activity }: { activity: any }) {
       </div>
       
       <div className="flex-1 min-w-0">
-        <Link to={`/activities/${activity.id}`}>
+        <Link to="/activities/$activityId" params={{activityId: activity.id}}>
           <p className="text-sm font-medium text-gray-900 hover:text-blue-600 truncate">
             {activity.description || activity.activityType?.name}
           </p>
@@ -400,7 +410,7 @@ function RecentActivityItem({ activity }: { activity: any }) {
           <span className="font-medium">{activity.creator?.username}</span>
           {' '}created{' '}
           <Link 
-            to={`/activities/${activity.id}`}
+            to="/activities/$activityId" params={{activityId: activity.id}}
             className="font-medium text-blue-600 hover:text-blue-500"
           >
             {activity.activityType?.name}

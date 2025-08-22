@@ -1,20 +1,24 @@
-// src/routes/activities/create.tsx
-import { createFileRoute, useNavigate } from '@tanstack/react-router'
+// src/routes/activities/create.tsx - Updated with react-hook-form
+import { createFileRoute, useRouter } from '@tanstack/react-router'
 import { useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useForm } from 'react-hook-form'
+import { zodResolver } from '@hookform/resolvers/zod'
+import { z } from 'zod'
+import { toast } from 'sonner'
 import { 
-  Calendar,
-  MapPin,
-  Users,
+  ArrowLeft, 
+  CalendarIcon, 
+  MapPin, 
+  Users, 
   Trophy,
-  Clock,
-  FileText,
-  Loader2,
-  ArrowLeft
+  Info,
+  Zap
 } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
 import { 
   Select,
   SelectContent,
@@ -22,130 +26,114 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { Label } from '@/components/ui/label'
+import { Switch } from '@/components/ui/switch'
+import { Badge } from '@/components/ui/badge'
 import { api, queryKeys } from '@/lib/api'
 import { useAuthStore } from '@/stores/auth-store'
-
-interface ActivityFormData {
-  activityTypeId: string
-  description: string
-  location: string
-  dateTime: string
-  maxParticipants: number | null
-  eloLevel: number | null
-  isELORated: boolean
-}
 
 export const Route = createFileRoute('/activities/create')({
   component: CreateActivityPage,
 })
 
+const createActivitySchema = z.object({
+  activityTypeId: z.string().min(1, 'Activity type is required'),
+  description: z.string().min(10, 'Description must be at least 10 characters'),
+  location: z.string().optional(),
+  dateTime: z.string().min(1, 'Date and time is required'),
+  maxParticipants: z.number().min(2, 'Must allow at least 2 participants').optional(),
+  eloLevel: z.number().min(800).max(2400).optional(),
+  isELORated: z.boolean(),
+})
+
+type CreateActivityForm = z.infer<typeof createActivitySchema>
+
 function CreateActivityPage() {
-  const navigate = useNavigate()
+  const router = useRouter()
   const queryClient = useQueryClient()
   const { user } = useAuthStore()
+  const [selectedActivityType, setSelectedActivityType] = useState<any>(null)
 
-  const [formData, setFormData] = useState<ActivityFormData>({
+  const {
+    register,
+    handleSubmit,
+    watch,
+    setValue,
+    formState: { errors, isSubmitting },
+  } = useForm<CreateActivityForm>({
+  resolver: zodResolver(createActivitySchema),
+  defaultValues: {
     activityTypeId: '',
     description: '',
-    location: '',
     dateTime: '',
-    maxParticipants: null,
-    eloLevel: null,
-    isELORated: true,
-  })
+    isELORated: false, // Add default value
+    location: '',
+    maxParticipants: undefined,
+    eloLevel: undefined,
+  },
+})
 
-  const [errors, setErrors] = useState<Record<string, string>>({})
+  const watchActivityTypeId = watch('activityTypeId')
+  const watchIsELORated = watch('isELORated')
 
   // Fetch activity types
-  const { data: activityTypes = [], isLoading: loadingTypes } = useQuery({
+  const { data: activityTypesData } = useQuery({
     queryKey: queryKeys.activityTypes(),
-    queryFn: api.activityTypes.list,
+    queryFn: () => api.activityTypes.list(),
+  })
+
+  // Fetch user's ELO for suggestion
+  const { data: userELOData } = useQuery({
+    queryKey: queryKeys.userELO(user?.id || ''),
+    queryFn: () => api.users.getELO(user?.id || ''),
+    enabled: !!user?.id && !!watchActivityTypeId,
   })
 
   // Create activity mutation
   const createActivityMutation = useMutation({
-    mutationFn: api.activities.create,
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['activities'] })
-      navigate({ to: `/activities/${data.id}` })
+    mutationFn: (data: CreateActivityForm) => api.activities.create(data),
+    onSuccess: (response) => {
+      toast.success('Activity created successfully!')
+      queryClient.invalidateQueries({ queryKey: queryKeys.activities() })
+      router.navigate({ to: `/activities/${response.data.activity.id}` })
     },
     onError: (error: any) => {
-      setErrors({ submit: error.message || 'Failed to create activity' })
-    }
+      toast.error(error.message || 'Failed to create activity')
+    },
   })
 
-  const validateForm = (): boolean => {
-    const newErrors: Record<string, string> = {}
+  const activityTypes = activityTypesData?.data?.activityTypes || []
+  const userELOs = userELOData?.data || []
 
-    if (!formData.activityTypeId) {
-      newErrors.activityTypeId = 'Please select an activity type'
-    }
-
-    if (!formData.description.trim()) {
-      newErrors.description = 'Please provide a description'
-    }
-
-    if (!formData.location.trim()) {
-      newErrors.location = 'Please specify a location'
-    }
-
-    if (!formData.dateTime) {
-      newErrors.dateTime = 'Please select date and time'
-    } else {
-      const selectedDate = new Date(formData.dateTime)
-      if (selectedDate <= new Date()) {
-        newErrors.dateTime = 'Activity must be scheduled for the future'
-      }
-    }
-
-    if (formData.maxParticipants !== null && formData.maxParticipants < 2) {
-      newErrors.maxParticipants = 'Minimum 2 participants required'
-    }
-
-    if (formData.isELORated && formData.eloLevel !== null) {
-      if (formData.eloLevel < 800 || formData.eloLevel > 3000) {
-        newErrors.eloLevel = 'ELO level must be between 800 and 3000'
-      }
-    }
-
-    setErrors(newErrors)
-    return Object.keys(newErrors).length === 0
+  // Get user's ELO for selected activity type
+  const getUserELOForType = (activityTypeId: string) => {
+    const userELO = userELOs.find(elo => elo.activityTypeId === activityTypeId)
+    return userELO?.eloScore || 1200
   }
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
+  // Auto-suggest ELO level based on user's rating
+  const suggestELOLevel = (activityTypeId: string) => {
+    const userELO = getUserELOForType(activityTypeId)
+    setValue('eloLevel', userELO)
+  }
+
+  const onSubmit = async (data: CreateActivityForm) => {
+    try {
+      await createActivityMutation.mutateAsync(data)
+    } catch (error) {
+      // Error handled in mutation
+    }
+  }
+
+  const handleActivityTypeChange = (activityTypeId: string) => {
+    setValue('activityTypeId', activityTypeId)
+    const selected = activityTypes.find(type => type.id === activityTypeId)
+    setSelectedActivityType(selected)
     
-    if (!validateForm()) {
-      return
+    // Auto-suggest ELO if ELO rated
+    if (watchIsELORated) {
+      suggestELOLevel(activityTypeId)
     }
-
-    const submitData = {
-      ...formData,
-      maxParticipants: formData.maxParticipants || undefined,
-      eloLevel: formData.isELORated ? formData.eloLevel || undefined : undefined,
-    }
-
-    createActivityMutation.mutate(submitData)
-  }
-
-  const handleInputChange = (field: keyof ActivityFormData, value: any) => {
-    setFormData(prev => ({ ...prev, [field]: value }))
-    
-    // Clear error for this field
-    if (errors[field]) {
-      setErrors(prev => ({ ...prev, [field]: '' }))
-    }
-  }
-
-  // Get minimum date/time (current time + 1 hour)
-  const getMinDateTime = () => {
-    const now = new Date()
-    now.setHours(now.getHours() + 1, 0, 0, 0)
-    return now.toISOString().slice(0, 16)
-  }
-
-  if (!user) {
-    return <div>Please log in to create activities.</div>
   }
 
   return (
@@ -155,236 +143,245 @@ function CreateActivityPage() {
         <Button
           variant="ghost"
           size="sm"
-          onClick={() => navigate({ to: '/activities' })}
+          onClick={() => router.history.back()}
         >
           <ArrowLeft className="h-4 w-4 mr-2" />
-          Back to Activities
+          Back
         </Button>
+        <div>
+          <h1 className="text-3xl font-bold text-gray-900">Create Activity</h1>
+          <p className="text-gray-600 mt-1">
+            Start a new activity and invite others to join
+          </p>
+        </div>
       </div>
 
-      <div>
-        <h1 className="text-3xl font-bold text-gray-900">Create Activity</h1>
-        <p className="text-gray-600 mt-1">
-          Organize a new activity and invite others to join
-        </p>
-      </div>
-
-      {/* Form */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Activity Details</CardTitle>
-          <CardDescription>
-            Fill in the information about your activity
-          </CardDescription>
-        </CardHeader>
-
-        <CardContent>
-          <form onSubmit={handleSubmit} className="space-y-6">
-            {errors.submit && (
-              <div className="bg-red-50 border border-red-200 rounded-md p-3">
-                <p className="text-sm text-red-600">{errors.submit}</p>
-              </div>
-            )}
-
-            {/* Activity Type */}
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-gray-700 flex items-center">
-                <Calendar className="h-4 w-4 mr-2" />
-                Activity Type *
-              </label>
-              <Select
-                value={formData.activityTypeId}
-                onValueChange={(value) => handleInputChange('activityTypeId', value)}
-                disabled={loadingTypes}
-              >
+      <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
+        {/* Activity Type Selection */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Activity Type</CardTitle>
+            <CardDescription>
+              Choose the type of activity you want to organize
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div>
+              <Select onValueChange={handleActivityTypeChange}>
                 <SelectTrigger>
-                  <SelectValue placeholder="Select activity type" />
+                  <SelectValue placeholder="Select an activity type" />
                 </SelectTrigger>
                 <SelectContent>
                   {activityTypes.map((type) => (
                     <SelectItem key={type.id} value={type.id}>
-                      {type.name}
+                      <div className="flex items-center space-x-2">
+                        <span>{type.name}</span>
+                        <Badge variant="outline" className="text-xs">
+                          {type.category?.replace('_', ' ')}
+                        </Badge>
+                      </div>
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
               {errors.activityTypeId && (
-                <p className="text-xs text-red-600">{errors.activityTypeId}</p>
+                <p className="text-sm text-red-600 mt-1">{errors.activityTypeId.message}</p>
               )}
             </div>
 
-            {/* Description */}
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-gray-700 flex items-center">
-                <FileText className="h-4 w-4 mr-2" />
-                Description *
-              </label>
-              <Input
-                value={formData.description}
-                onChange={(e) => handleInputChange('description', e.target.value)}
-                placeholder="e.g., Casual basketball game at the local court"
-                disabled={createActivityMutation.isPending}
+            {/* Activity Type Info */}
+            {selectedActivityType && (
+              <div className="p-4 bg-blue-50 rounded-lg">
+                <h4 className="font-medium text-blue-900 mb-2">{selectedActivityType.name}</h4>
+                <p className="text-sm text-blue-700 mb-3">{selectedActivityType.description}</p>
+                
+                {/* Show if solo performable */}
+                {selectedActivityType.isSoloPerformable && (
+                  <Badge variant="secondary" className="text-xs">
+                    <Info className="h-3 w-3 mr-1" />
+                    Can be performed solo
+                  </Badge>
+                )}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Basic Details */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Activity Details</CardTitle>
+            <CardDescription>
+              Provide details about your activity
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div>
+              <Label htmlFor="description">Description *</Label>
+              <Textarea
+                id="description"
+                placeholder="Describe your activity, skill level, what to bring, etc."
+                rows={4}
+                {...register('description')}
               />
               {errors.description && (
-                <p className="text-xs text-red-600">{errors.description}</p>
+                <p className="text-sm text-red-600 mt-1">{errors.description.message}</p>
               )}
             </div>
 
-            {/* Location */}
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-gray-700 flex items-center">
-                <MapPin className="h-4 w-4 mr-2" />
-                Location *
-              </label>
-              <Input
-                value={formData.location}
-                onChange={(e) => handleInputChange('location', e.target.value)}
-                placeholder="e.g., Central Park Basketball Court"
-                disabled={createActivityMutation.isPending}
-              />
-              {errors.location && (
-                <p className="text-xs text-red-600">{errors.location}</p>
-              )}
-            </div>
-
-            {/* Date and Time */}
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-gray-700 flex items-center">
-                <Clock className="h-4 w-4 mr-2" />
-                Date & Time *
-              </label>
-              <Input
-                type="datetime-local"
-                value={formData.dateTime}
-                onChange={(e) => handleInputChange('dateTime', e.target.value)}
-                min={getMinDateTime()}
-                disabled={createActivityMutation.isPending}
-              />
-              {errors.dateTime && (
-                <p className="text-xs text-red-600">{errors.dateTime}</p>
-              )}
-            </div>
-
-            {/* Max Participants */}
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-gray-700 flex items-center">
-                <Users className="h-4 w-4 mr-2" />
-                Maximum Participants
-              </label>
-              <Input
-                type="number"
-                value={formData.maxParticipants || ''}
-                onChange={(e) => handleInputChange('maxParticipants', 
-                  e.target.value ? parseInt(e.target.value) : null
-                )}
-                placeholder="Leave empty for unlimited"
-                min={2}
-                max={50}
-                disabled={createActivityMutation.isPending}
-              />
-              {errors.maxParticipants && (
-                <p className="text-xs text-red-600">{errors.maxParticipants}</p>
-              )}
-              <p className="text-xs text-gray-500">
-                Including yourself. Leave empty for unlimited participants.
-              </p>
-            </div>
-
-            {/* ELO Settings */}
-            <div className="space-y-4 p-4 bg-gray-50 rounded-lg">
-              <div className="flex items-center space-x-3">
-                <input
-                  type="checkbox"
-                  id="isELORated"
-                  checked={formData.isELORated}
-                  onChange={(e) => handleInputChange('isELORated', e.target.checked)}
-                  className="rounded border-gray-300"
-                  disabled={createActivityMutation.isPending}
-                />
-                <label htmlFor="isELORated" className="text-sm font-medium text-gray-700 flex items-center">
-                  <Trophy className="h-4 w-4 mr-2" />
-                  ELO Rated Activity
-                </label>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <Label htmlFor="location">Location</Label>
+                <div className="relative">
+                  <MapPin className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+                  <Input
+                    id="location"
+                    placeholder="Enter location or address"
+                    className="pl-10"
+                    {...register('location')}
+                  />
+                </div>
               </div>
 
-              {formData.isELORated && (
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-gray-700">
-                    Suggested ELO Level (optional)
-                  </label>
+              <div>
+                <Label htmlFor="dateTime">Date & Time *</Label>
+                <div className="relative">
+                  <CalendarIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
                   <Input
-                    type="number"
-                    value={formData.eloLevel || ''}
-                    onChange={(e) => handleInputChange('eloLevel', 
-                      e.target.value ? parseInt(e.target.value) : null
-                    )}
-                    placeholder="e.g., 1200"
-                    min={800}
-                    max={3000}
-                    disabled={createActivityMutation.isPending}
+                    id="dateTime"
+                    type="datetime-local"
+                    className="pl-10"
+                    min={new Date().toISOString().slice(0, 16)}
+                    {...register('dateTime')}
                   />
-                  {errors.eloLevel && (
-                    <p className="text-xs text-red-600">{errors.eloLevel}</p>
-                  )}
-                  <p className="text-xs text-gray-500">
-                    Help players find activities matching their skill level. Leave empty to allow all levels.
-                  </p>
                 </div>
-              )}
-
-              <p className="text-xs text-gray-600">
-                {formData.isELORated 
-                  ? "This activity will affect players' ELO ratings based on results."
-                  : "This will be a casual activity without ELO rating changes."
-                }
-              </p>
-            </div>
-
-            {/* Submit Buttons */}
-            <div className="flex justify-end space-x-4 pt-6">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => navigate({ to: '/activities' })}
-                disabled={createActivityMutation.isPending}
-              >
-                Cancel
-              </Button>
-              
-              <Button
-                type="submit"
-                disabled={createActivityMutation.isPending}
-              >
-                {createActivityMutation.isPending ? (
-                  <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Creating...
-                  </>
-                ) : (
-                  <>
-                    <Calendar className="mr-2 h-4 w-4" />
-                    Create Activity
-                  </>
+                {errors.dateTime && (
+                  <p className="text-sm text-red-600 mt-1">{errors.dateTime.message}</p>
                 )}
-              </Button>
+              </div>
             </div>
-          </form>
-        </CardContent>
-      </Card>
 
-      {/* Tips Card */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-lg">Tips for Creating Great Activities</CardTitle>
-        </CardHeader>
-        <CardContent className="text-sm text-gray-600 space-y-2">
-          <p>• <strong>Be specific</strong> in your description - mention skill level, equipment needed, etc.</p>
-          <p>• <strong>Choose accessible locations</strong> that are easy to find and have parking/transport</p>
-          <p>• <strong>Set realistic participant limits</strong> based on the venue and activity type</p>
-          <p>• <strong>Use ELO ratings</strong> to help players find appropriately challenging activities</p>
-          <p>• <strong>Schedule in advance</strong> to give people time to plan and join</p>
-        </CardContent>
-      </Card>
+            <div>
+              <Label htmlFor="maxParticipants">Maximum Participants</Label>
+              <div className="relative">
+                <Users className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+                <Input
+                  id="maxParticipants"
+                  type="number"
+                  placeholder="Leave empty for unlimited"
+                  className="pl-10"
+                  min={2}
+                  max={100}
+                  {...register('maxParticipants', { valueAsNumber: true })}
+                />
+              </div>
+              {errors.maxParticipants && (
+                <p className="text-sm text-red-600 mt-1">{errors.maxParticipants.message}</p>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* ELO Settings */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Competition Settings</CardTitle>
+            <CardDescription>
+              Configure competitive aspects of your activity
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="space-y-0.5">
+                <Label htmlFor="isELORated">ELO Rated Activity</Label>
+                <p className="text-sm text-gray-600">
+                  This activity will affect participants' ELO ratings
+                </p>
+              </div>
+              <Switch
+                id="isELORated"
+                checked={watchIsELORated}
+                onCheckedChange={(checked) => setValue('isELORated', checked)}
+              />
+            </div>
+
+            {watchIsELORated && (
+              <div className="space-y-4 pt-4 border-t">
+                <div>
+                  <Label htmlFor="eloLevel">Suggested ELO Level</Label>
+                  <div className="flex items-center space-x-2 mt-1">
+                    <div className="relative flex-1">
+                      <Trophy className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+                      <Input
+                        id="eloLevel"
+                        type="number"
+                        placeholder="1200"
+                        className="pl-10"
+                        min={800}
+                        max={2400}
+                        {...register('eloLevel', { valueAsNumber: true })}
+                      />
+                    </div>
+                    {watchActivityTypeId && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => suggestELOLevel(watchActivityTypeId)}
+                      >
+                        <Zap className="h-4 w-4 mr-1" />
+                        Use My ELO ({getUserELOForType(watchActivityTypeId)})
+                      </Button>
+                    )}
+                  </div>
+                  <p className="text-sm text-gray-600 mt-1">
+                    Participants with similar ELO levels will have the best experience
+                  </p>
+                  {errors.eloLevel && (
+                    <p className="text-sm text-red-600 mt-1">{errors.eloLevel.message}</p>
+                  )}
+                </div>
+
+                {watchActivityTypeId && userELOs.length > 0 && (
+                  <div className="p-4 bg-gray-50 rounded-lg">
+                    <h4 className="font-medium text-gray-900 mb-2">Your ELO Ratings</h4>
+                    <div className="grid grid-cols-2 gap-2">
+                      {userELOs
+                        .filter(elo => elo.activityTypeId === watchActivityTypeId)
+                        .map(elo => (
+                          <div key={elo.activityTypeId} className="text-sm">
+                            <span className="font-medium">{elo.eloScore}</span>
+                            <span className="text-gray-600 ml-1">
+                              ({elo.gamesPlayed} games)
+                            </span>
+                          </div>
+                        ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Submit */}
+        <div className="flex items-center justify-between pt-6 border-t">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => router.history.back()}
+          >
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            disabled={isSubmitting || createActivityMutation.isPending}
+            className="min-w-[120px]"
+          >
+            {isSubmitting || createActivityMutation.isPending ? 'Creating...' : 'Create Activity'}
+          </Button>
+        </div>
+      </form>
     </div>
   )
 }

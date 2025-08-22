@@ -336,7 +336,7 @@ function FeedItem({ item, currentUser }: { item: any; currentUser: any }) {
                 <>
                   <span className="text-gray-500">participated in</span>
                   <Link 
-                    to={`/activities/${item.activity.id}`}
+                    to="/activities/$activityId" params={{activityId: item.activity.id}}
                     className="font-medium text-blue-600 hover:text-blue-500"
                   >
                     {item.activity.activityType?.name || 'Activity'}

@@ -43,6 +43,13 @@
       "when": 1754426397011,
       "tag": "0005_lethal_cloak",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1755010213332,
+      "tag": "0006_stiff_shockwave",
+      "breakpoints": true
     }
   ]
 }
